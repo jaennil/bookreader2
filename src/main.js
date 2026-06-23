@@ -5,40 +5,7 @@ import "./styles.css";
 const STORAGE_KEY = "polka-reader-state-v1";
 const DB_NAME = "polka-reader-files";
 const DB_STORE = "books";
-
-const sampleText = [
-  "Было уже поздно, когда город наконец затих. В окнах напротив один за другим гас свет, а в комнате оставался только мягкий круг от лампы и шелест переворачиваемых страниц.",
-  "Книга всегда оказывалась чуть больше самой истории. Между строк сохранялись дни, в которые её читали, шум дождя за стеклом и случайные мысли, которые потом невозможно было отделить от текста.",
-  "Он остановился у окна. Внизу медленно проехал последний трамвай, рассыпая свет по мокрым рельсам. Казалось, ещё одна глава — и станет понятно то, что ускользало весь вечер.",
-  "Но ясность редко приходит по расписанию. Иногда нужно закрыть книгу, пройтись по тёмной комнате и только потом заметить, что ответ уже давно был рядом.",
-  "На полях лежали короткие заметки прежнего читателя. Они спорили с автором, соглашались с ним и иногда уходили далеко в сторону. Этот тихий разговор через годы делал старый том почти живым.",
-  "За стеной кто-то включил воду. Дом напомнил о себе скрипом труб и шагами на лестнице. Мир продолжал двигаться, пока рассказ удерживал время внутри нескольких страниц.",
-  "В следующей главе всё начиналось заново: другой город, другое утро, незнакомое имя. И всё же сквозь новые декорации проступала та же мысль — человек узнаёт себя только в движении.",
-  "Он улыбнулся и перевернул страницу. До рассвета оставалось ещё достаточно времени."
-];
-
-const seedBooks = [
-  {
-    id: "fahrenheit-451", title: "451° по Фаренгейту", author: "Рэй Брэдбери", format: "EPUB", progress: 38,
-    color: "#e76f43", textColor: "#17201d", style: "type", decoration: "451", pages: 256, lastRead: Date.now() - 1000 * 60 * 18,
-    favorite: true, sample: true
-  },
-  {
-    id: "solaris", title: "Солярис", author: "Станислав Лем", format: "FB2", progress: 12,
-    color: "#d5e7ad", textColor: "#23483f", style: "orbit", decoration: "", pages: 288, lastRead: Date.now() - 1000 * 60 * 60 * 28,
-    favorite: false, sample: true
-  },
-  {
-    id: "master", title: "Мастер и Маргарита", author: "Михаил Булгаков", format: "EPUB", progress: 0,
-    color: "#283c5b", textColor: "#f7e8d1", style: "sun", decoration: "", pages: 416, lastRead: 0,
-    favorite: true, sample: true
-  },
-  {
-    id: "flowers", title: "Цветы для Элджернона", author: "Дэниел Киз", format: "PDF", progress: 67,
-    color: "#efc65e", textColor: "#2c332d", style: "lines", decoration: "", pages: 320, lastRead: Date.now() - 1000 * 60 * 60 * 50,
-    favorite: false, sample: true
-  }
-];
+const DEMO_BOOK_IDS = new Set(["fahrenheit-451", "solaris", "master", "flowers"]);
 
 const icons = {
   library: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>',
@@ -64,26 +31,25 @@ let searchQuery = "";
 let rendition = null;
 let activeBook = null;
 let pdfDocument = null;
-let pdfRenderTask = null;
+let pdfRenderTasks = new Map();
 let pdfResizeTimer = null;
+let pdfScrollTimer = null;
 let pdfjs = null;
 let scrollSaveTimer = null;
 
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    const savedById = new Map((saved?.books || []).map(book => [book.id, book]));
+    const savedProfile = saved?.profile;
+    const hasDemoProfile = savedProfile?.name === "Анна Крылова" && savedProfile?.email === "anna@example.ru";
     return {
-      books: [
-        ...seedBooks.map(book => ({ ...book, ...(savedById.get(book.id) || {}) })),
-        ...(saved?.books || []).filter(book => !seedBooks.some(seed => seed.id === book.id))
-      ],
-      profile: saved?.profile || { name: "Анна Крылова", email: "anna@example.ru" },
+      books: (saved?.books || []).filter(book => !book.sample && !DEMO_BOOK_IDS.has(book.id)),
+      profile: savedProfile && !hasDemoProfile ? savedProfile : { name: "", email: "" },
       readerTheme: saved?.readerTheme || "paper",
       readerSize: saved?.readerSize || 19
     };
   } catch {
-    return { books: [...seedBooks], profile: { name: "Анна Крылова", email: "anna@example.ru" }, readerTheme: "paper", readerSize: 19 };
+    return { books: [], profile: { name: "", email: "" }, readerTheme: "paper", readerSize: 19 };
   }
 }
 
@@ -92,7 +58,7 @@ function saveState() {
 }
 
 function initials(name) {
-  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "ЧТ";
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "Я";
 }
 
 function escapeHtml(value = "") {
@@ -138,7 +104,7 @@ function renderApp() {
           </label>
           <button class="account-button" id="accountButton" aria-label="Открыть профиль">
             <span class="avatar">${initials(state.profile.name)}</span>
-            <span class="account-copy"><strong>${escapeHtml(state.profile.name)}</strong><span class="sync-status">Сохранено локально</span></span>
+            <span class="account-copy"><strong>${escapeHtml(state.profile.name || "Профиль")}</strong><span class="sync-status">Сохранено локально</span></span>
             ${icons.chevron}
           </button>
         </header>
@@ -197,7 +163,7 @@ function viewHeading(firstName) {
   if (searchQuery) return "Результаты поиска";
   if (currentView === "favorites") return "Избранное";
   if (currentView === "uploads") return "Мои загрузки";
-  return `${timeGreeting()}, ${escapeHtml(firstName)}`;
+  return firstName ? `${timeGreeting()}, ${escapeHtml(firstName)}` : timeGreeting();
 }
 
 function sectionHeading() {
@@ -459,9 +425,9 @@ function showAccountModal() {
         <button class="close-button" type="button" aria-label="Закрыть">${icons.close}</button>
         <p class="eyebrow">Аккаунт</p>
         <h2 id="profileTitle">Ваш профиль</h2>
-        <div class="profile-top"><span class="avatar">${initials(state.profile.name)}</span><div><strong>${escapeHtml(state.profile.name)}</strong><span>${state.books.length} книг · ${state.books.filter(book => book.favorite).length} в избранном</span></div></div>
+        <div class="profile-top"><span class="avatar">${initials(state.profile.name)}</span><div><strong>${escapeHtml(state.profile.name || "Профиль не заполнен")}</strong><span>${state.books.length} книг · ${state.books.filter(book => book.favorite).length} в избранном</span></div></div>
         <div class="field"><label for="profileName">Имя</label><input id="profileName" name="name" value="${escapeHtml(state.profile.name)}" required /></div>
-        <div class="field"><label for="profileEmail">Электронная почта</label><input id="profileEmail" name="email" type="email" value="${escapeHtml(state.profile.email)}" required /></div>
+        <div class="field"><label for="profileEmail">Электронная почта</label><input id="profileEmail" name="email" type="email" placeholder="name@example.ru" value="${escapeHtml(state.profile.email)}" /></div>
         <div class="account-note">${icons.info}<span>В прототипе профиль и прогресс хранятся на этом устройстве. Для реальной синхронизации между телефоном и компьютером потребуется серверный аккаунт.</span></div>
         <div class="modal-actions"><button class="secondary-button" type="button" id="cancelProfile">Отмена</button><button class="primary-button" type="submit">Сохранить</button></div>
       </form>
@@ -490,10 +456,6 @@ async function openReader(id) {
   bindReaderEvents();
   const stage = document.querySelector("#readerStage");
 
-  if (activeBook.sample) {
-    renderSampleBook(stage, activeBook);
-    return;
-  }
   try {
     const stored = await getBookFile(activeBook.id);
     if (!stored?.file) throw new Error("missing file");
@@ -517,7 +479,7 @@ function readerMarkup(book) {
         <div class="reader-title"><strong>${escapeHtml(book.title)}</strong><span>${escapeHtml(book.author)}</span></div>
         <div class="reader-tools">
           <button class="reader-tool-button" id="themeButton" title="Сменить фон">◐</button>
-          <button class="reader-tool-button" id="fontButton" title="Размер текста">Аа</button>
+          ${book.format === "PDF" ? "" : '<button class="reader-tool-button" id="fontButton" title="Размер текста">Аа</button>'}
         </div>
       </header>
       <main class="reader-stage" id="readerStage"><div class="reader-placeholder"><div><h2>Открываем книгу…</h2></div></div></main>
@@ -555,22 +517,6 @@ function readerKeyboard(event) {
   if (event.key === "ArrowRight") readerNext();
 }
 
-function renderSampleBook(stage, book) {
-  const paragraphs = [...sampleText, ...sampleText, ...sampleText];
-  stage.innerHTML = `<div class="reader-scroll" id="readerScroll"><article class="reader-article"><h1>${escapeHtml(book.title)}</h1><div class="chapter-author">${escapeHtml(book.author)}</div>${paragraphs.map(text => `<p>${text}</p>`).join("")}</article></div>`;
-  const scroll = document.querySelector("#readerScroll");
-  requestAnimationFrame(() => {
-    scroll.scrollTop = (scroll.scrollHeight - scroll.clientHeight) * (book.progress / 100);
-  });
-  scroll.addEventListener("scroll", () => {
-    clearTimeout(scrollSaveTimer);
-    scrollSaveTimer = setTimeout(() => {
-      const max = scroll.scrollHeight - scroll.clientHeight;
-      updateProgress(max > 0 ? (scroll.scrollTop / max) * 100 : 0);
-    }, 100);
-  }, { passive: true });
-}
-
 function renderFb2(stage, book, content) {
   const paragraphs = content.length ? content : ["В книге не найден текст для отображения."];
   stage.innerHTML = `<div class="reader-scroll" id="readerScroll"><article class="reader-article"><h1>${escapeHtml(book.title)}</h1><div class="chapter-author">${escapeHtml(book.author)}</div>${paragraphs.map(text => `<p>${escapeHtml(text)}</p>`).join("")}</article></div>`;
@@ -602,54 +548,136 @@ async function renderEpub(stage, book, file) {
 }
 
 async function renderPdf(stage, book, file) {
-  stage.innerHTML = '<div class="pdf-stage" id="pdfStage"><div class="pdf-page"><canvas id="pdfCanvas"></canvas></div></div>';
   pdfjs ||= await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   pdfDocument = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   book.pages = pdfDocument.numPages;
   book.page = Math.max(1, Math.min(book.pages, book.page || Math.round((book.progress / 100) * book.pages) || 1));
-  await renderPdfPage(book.page);
+  const firstPage = await pdfDocument.getPage(1);
+  const firstViewport = firstPage.getViewport({ scale: 1 });
+  stage.innerHTML = `
+    <div class="pdf-stage" id="pdfStage">
+      <div class="pdf-document">
+        ${Array.from({ length: book.pages }, (_, index) => `<div class="pdf-page" id="pdfPage-${index + 1}" data-pdf-page="${index + 1}" style="aspect-ratio:${firstViewport.width} / ${firstViewport.height}"></div>`).join("")}
+      </div>
+    </div>`;
+  const pdfStage = document.querySelector("#pdfStage");
+  pdfStage.addEventListener("scroll", handlePdfScroll, { passive: true });
+  requestAnimationFrame(() => {
+    const currentPage = document.querySelector(`#pdfPage-${book.page}`);
+    if (currentPage) pdfStage.scrollTop = Math.max(0, currentPage.offsetTop - 24);
+    renderPdfWindow(book.page);
+    updatePdfPageLabel(book.page);
+  });
   window.addEventListener("resize", resizePdfPage);
 }
 
 async function renderPdfPage(pageNumber) {
-  if (!pdfDocument || !activeBook) return;
-  if (pdfRenderTask) {
-    try { pdfRenderTask.cancel(); } catch { /* A completed task cannot be cancelled. */ }
+  if (!pdfDocument || pdfRenderTasks.has(pageNumber)) return;
+  const pageElement = document.querySelector(`#pdfPage-${pageNumber}`);
+  if (!pageElement) return;
+  const renderedWidth = Number(pageElement.dataset.renderedWidth || 0);
+  if (pageElement.dataset.rendered === "true" && Math.abs(renderedWidth - pageElement.clientWidth) < 4) return;
+
+  const entry = { cancel: null, promise: null };
+  entry.promise = (async () => {
+    const page = await pdfDocument.getPage(pageNumber);
+    if (!document.body.contains(pageElement)) return;
+    const baseViewport = page.getViewport({ scale: 1 });
+    const cssWidth = pageElement.clientWidth;
+    const outputScale = Math.min(window.devicePixelRatio || 1, 2);
+    const viewport = page.getViewport({ scale: (cssWidth / baseViewport.width) * outputScale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`;
+    pageElement.style.aspectRatio = `${baseViewport.width} / ${baseViewport.height}`;
+    pageElement.replaceChildren(canvas);
+    const renderTask = page.render({ canvasContext: canvas.getContext("2d"), viewport });
+    entry.cancel = () => renderTask.cancel();
+    await renderTask.promise;
+    pageElement.dataset.rendered = "true";
+    pageElement.dataset.renderedWidth = String(cssWidth);
+  })();
+  pdfRenderTasks.set(pageNumber, entry);
+  try {
+    await entry.promise;
+  } catch (error) {
+    if (error?.name !== "RenderingCancelledException") throw error;
+  } finally {
+    if (pdfRenderTasks.get(pageNumber) === entry) pdfRenderTasks.delete(pageNumber);
   }
-  const page = await pdfDocument.getPage(pageNumber);
-  const stage = document.querySelector("#pdfStage");
-  const canvas = document.querySelector("#pdfCanvas");
-  if (!stage || !canvas) return;
-  const baseViewport = page.getViewport({ scale: 1 });
-  const cssScale = Math.min(1.35, Math.max(.25, (stage.clientWidth - 40) / baseViewport.width));
-  const outputScale = Math.min(window.devicePixelRatio || 1, 2);
-  const viewport = page.getViewport({ scale: cssScale * outputScale });
-  const context = canvas.getContext("2d");
-  canvas.width = Math.floor(viewport.width);
-  canvas.height = Math.floor(viewport.height);
-  canvas.style.width = `${Math.floor(viewport.width / outputScale)}px`;
-  canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`;
-  const renderTask = page.render({ canvasContext: context, viewport });
-  pdfRenderTask = renderTask;
-  try { await renderTask.promise; } catch (error) {
-    if (error?.name === "RenderingCancelledException") return;
-    throw error;
+}
+
+function renderPdfWindow(centerPage) {
+  if (!pdfDocument) return;
+  const firstPage = Math.max(1, centerPage - 2);
+  const lastPage = Math.min(pdfDocument.numPages, centerPage + 3);
+  for (let page = firstPage; page <= lastPage; page += 1) {
+    renderPdfPage(page).catch(error => { if (activeBook) console.error(error); });
   }
-  if (renderTask !== pdfRenderTask) return;
-  activeBook.page = pageNumber;
-  updateProgress((pageNumber / pdfDocument.numPages) * 100);
+
+  document.querySelectorAll(".pdf-page[data-rendered='true']").forEach(pageElement => {
+    const page = Number(pageElement.dataset.pdfPage);
+    if (Math.abs(page - centerPage) <= 5) return;
+    pdfRenderTasks.get(page)?.cancel?.();
+    pageElement.replaceChildren();
+    delete pageElement.dataset.rendered;
+    delete pageElement.dataset.renderedWidth;
+  });
+}
+
+function handlePdfScroll() {
+  clearTimeout(pdfScrollTimer);
+  pdfScrollTimer = setTimeout(() => {
+    const stage = document.querySelector("#pdfStage");
+    if (!stage || !activeBook || !pdfDocument) return;
+    const readingLine = stage.scrollTop + stage.clientHeight * .38;
+    let currentPage = 1;
+    for (const pageElement of document.querySelectorAll(".pdf-page")) {
+      if (pageElement.offsetTop > readingLine) break;
+      currentPage = Number(pageElement.dataset.pdfPage);
+    }
+    if (currentPage === activeBook.page) return;
+    activeBook.page = currentPage;
+    updatePdfPageLabel(currentPage);
+    updateProgress((currentPage / pdfDocument.numPages) * 100);
+    renderPdfWindow(currentPage);
+  }, 70);
+}
+
+function updatePdfPageLabel(pageNumber) {
   const pageLabel = document.querySelector("#readerPageLabel");
-  if (pageLabel) pageLabel.textContent = `${pageNumber} / ${pdfDocument.numPages}`;
+  if (pageLabel && pdfDocument) pageLabel.textContent = `${pageNumber} / ${pdfDocument.numPages}`;
+}
+
+function scrollToPdfPage(pageNumber) {
+  if (!pdfDocument) return;
+  const targetPage = Math.max(1, Math.min(pdfDocument.numPages, pageNumber));
+  const stage = document.querySelector("#pdfStage");
+  const pageElement = document.querySelector(`#pdfPage-${targetPage}`);
+  if (!stage || !pageElement) return;
+  renderPdfWindow(targetPage);
+  stage.scrollTo({ top: Math.max(0, pageElement.offsetTop - 24), behavior: "smooth" });
 }
 
 function resizePdfPage() {
   clearTimeout(pdfResizeTimer);
-  pdfResizeTimer = setTimeout(() => activeBook?.page && renderPdfPage(activeBook.page), 140);
+  pdfResizeTimer = setTimeout(() => {
+    pdfRenderTasks.forEach(entry => entry.cancel?.());
+    pdfRenderTasks.clear();
+    document.querySelectorAll(".pdf-page[data-rendered='true']").forEach(pageElement => {
+      pageElement.replaceChildren();
+      delete pageElement.dataset.rendered;
+      delete pageElement.dataset.renderedWidth;
+    });
+    if (activeBook?.page) renderPdfWindow(activeBook.page);
+  }, 140);
 }
 
 function readerPrevious() {
-  if (pdfDocument) { renderPdfPage(Math.max(1, activeBook.page - 1)); return; }
+  if (pdfDocument) { scrollToPdfPage(activeBook.page - 1); return; }
   if (rendition) { rendition.prev(); return; }
   const scroll = document.querySelector("#readerScroll");
   if (scroll) scroll.scrollBy({ top: -scroll.clientHeight * .82, behavior: "smooth" });
@@ -657,7 +685,7 @@ function readerPrevious() {
 }
 
 function readerNext() {
-  if (pdfDocument) { renderPdfPage(Math.min(pdfDocument.numPages, activeBook.page + 1)); return; }
+  if (pdfDocument) { scrollToPdfPage(activeBook.page + 1); return; }
   if (rendition) { rendition.next(); return; }
   const scroll = document.querySelector("#readerScroll");
   if (scroll) scroll.scrollBy({ top: scroll.clientHeight * .82, behavior: "smooth" });
@@ -677,11 +705,10 @@ function updateProgress(value) {
 
 function closeReader() {
   window.removeEventListener("resize", resizePdfPage);
-  if (pdfRenderTask) {
-    try { pdfRenderTask.cancel(); } catch { /* It may already be complete. */ }
-  }
+  clearTimeout(pdfScrollTimer);
+  pdfRenderTasks.forEach(entry => entry.cancel?.());
+  pdfRenderTasks.clear();
   if (pdfDocument) pdfDocument.destroy();
-  pdfRenderTask = null;
   pdfDocument = null;
   if (rendition) rendition.destroy();
   rendition = null;

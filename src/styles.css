@@ -415,15 +415,17 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .reader-article p { margin-bottom: 1.35em; }
 .reader[data-theme="dark"] .reader-article { color: #d4d9d5; }
 .epub-stage { width: min(860px, 100%); height: 100%; margin: auto; }
-.pdf-stage { width: 100%; height: 100%; padding: 28px 20px 70px; overflow: auto; }
-.pdf-page { display: flex; justify-content: center; width: max-content; min-width: 100%; }
-.pdf-page canvas { display: block; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .18); }
+.pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; scroll-behavior: smooth; }
+.pdf-document { display: grid; gap: 28px; width: min(900px, calc(100% - 40px)); margin: 0 auto; }
+.pdf-page { position: relative; display: grid; place-items: center; width: 100%; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .16); }
+.pdf-page::after { content: attr(data-pdf-page); position: absolute; right: 0; bottom: -19px; color: #888e89; font-size: 9px; }
+.pdf-page canvas { display: block; width: 100%; background: #fff; }
 .reader-placeholder { display: grid; place-items: center; height: 100%; padding: 30px; text-align: center; }
 .reader-placeholder div { max-width: 440px; }
 .reader-placeholder h2 { font-family: Georgia, serif; font-weight: 400; }
 .reader-placeholder p { color: var(--muted); font-size: 11px; line-height: 1.7; }
 
-.reader-footer { display: grid; grid-template-columns: 1fr minmax(180px, 440px) 1fr; align-items: center; gap: 24px; padding: 0 30px; border-top: 1px solid rgba(70, 78, 73, .12); }
+.reader-footer { position: relative; z-index: 2; display: grid; grid-template-columns: 1fr minmax(180px, 440px) 1fr; align-items: center; gap: 24px; padding: 0 30px; border-top: 1px solid rgba(70, 78, 73, .12); background: inherit; }
 .reader[data-theme="dark"] .reader-footer { border-color: rgba(255,255,255,.1); }
 .reader-nav { display: flex; align-items: center; gap: 8px; }
 .reader-nav:last-child { justify-content: flex-end; }
@@ -499,6 +501,8 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
   .reader-tools .reader-tool-button:nth-child(2) { display: none; }
   .reader-article { width: calc(100% - 34px); padding-top: 42px; line-height: 1.72; }
   .reader-article h1 { font-size: 28px; }
+  .pdf-stage { padding-top: 14px; }
+  .pdf-document { gap: 22px; width: calc(100% - 20px); }
   .reader-footer { grid-template-columns: auto 1fr auto; gap: 10px; padding: 0 11px; }
   .reader-position { display: none; }
 }
