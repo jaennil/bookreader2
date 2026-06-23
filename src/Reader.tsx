@@ -7,6 +7,18 @@ import type { Book, BookUpdate } from "./types";
 type Theme = "paper" | "sepia" | "dark";
 type Navigation = { previous: () => void; next: () => void };
 type PDFDocument = import("pdfjs-dist").PDFDocumentProxy;
+type PDFPageProxy = import("pdfjs-dist").PDFPageProxy;
+type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
+type PDFDestinationTarget = { page: number; offsetRatio: number };
+type PDFLinkAnnotation = {
+  subtype?: string;
+  rect?: number[];
+  url?: string;
+  unsafeUrl?: string;
+  dest?: string | unknown[];
+  action?: string;
+  contents?: string | { str?: string };
+};
 
 interface ReaderProps {
   book: Book;
@@ -212,11 +224,14 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
     };
   }, [blob]);
 
-  const goToPage = useCallback((page: number) => {
+  const goToPage = useCallback((page: number, offsetRatio = 0) => {
     if (!document || !stageRef.current) return;
     const target = Math.max(1, Math.min(document.numPages, page));
     const pageElement = stageRef.current.querySelector<HTMLElement>(`[data-pdf-page="${target}"]`);
-    if (pageElement) stageRef.current.scrollTo({ top: Math.max(0, pageElement.offsetTop - 24), behavior: "smooth" });
+    if (pageElement) {
+      const offset = Math.max(0, pageElement.clientHeight * Math.min(1, Math.max(0, offsetRatio)));
+      stageRef.current.scrollTo({ top: Math.max(0, pageElement.offsetTop + offset - 24), behavior: "smooth" });
+    }
   }, [document]);
 
   useEffect(() => {
@@ -256,19 +271,20 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       <div className="pdf-document">
         {Array.from({ length: document.numPages }, (_, index) => {
           const page = index + 1;
-          return <PDFPage key={page} document={document} page={page} active={Math.abs(page - currentPage) <= 3} ratio={ratio}/>;
+          return <PDFPage key={page} document={document} page={page} active={Math.abs(page - currentPage) <= 3} ratio={ratio} onInternalLink={goToPage}/>;
         })}
       </div>
     </div>
   );
 }
 
-function PDFPage({ document, page, active, ratio }: { document: PDFDocument; page: number; active: boolean; ratio: string }) {
+function PDFPage({ document, page, active, ratio, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; onInternalLink: (page: number, offsetRatio?: number) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const linkLayerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!active || !wrapperRef.current || !canvasRef.current) return;
+    if (!active || !wrapperRef.current || !canvasRef.current || !linkLayerRef.current) return;
     let task: import("pdfjs-dist").RenderTask | null = null;
     let cancelled = false;
 
@@ -279,12 +295,24 @@ function PDFPage({ document, page, active, ratio }: { document: PDFDocument; pag
       const width = wrapperRef.current.clientWidth;
       const outputScale = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = pdfPage.getViewport({ scale: width / base.width * outputScale });
+      const cssViewport = pdfPage.getViewport({ scale: width / base.width });
       const canvas = canvasRef.current;
+      wrapperRef.current.style.aspectRatio = `${base.width} / ${base.height}`;
       canvas.width = Math.floor(viewport.width);
       canvas.height = Math.floor(viewport.height);
       canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`;
       task = pdfPage.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
+      const annotations = await pdfPage.getAnnotations({ intent: "display" }) as PDFLinkAnnotation[];
       await task.promise;
+      if (cancelled || !linkLayerRef.current) return;
+      renderPDFLinks({
+        annotations,
+        viewport: cssViewport,
+        layer: linkLayerRef.current,
+        document,
+        currentPage: page,
+        onInternalLink
+      });
     };
     void render().catch(error => {
       if (error?.name !== "RenderingCancelledException") console.error(error);
@@ -292,8 +320,136 @@ function PDFPage({ document, page, active, ratio }: { document: PDFDocument; pag
     return () => {
       cancelled = true;
       task?.cancel();
+      linkLayerRef.current?.replaceChildren();
     };
-  }, [active, document, page]);
+  }, [active, document, onInternalLink, page]);
 
-  return <div className="pdf-page" ref={wrapperRef} data-pdf-page={page} style={{ aspectRatio: ratio }}>{active && <canvas ref={canvasRef}/>}</div>;
+  return (
+    <div className="pdf-page" ref={wrapperRef} data-pdf-page={page} style={{ aspectRatio: ratio }}>
+      {active && <><canvas ref={canvasRef}/><div className="pdf-link-layer" ref={linkLayerRef}/></>}
+    </div>
+  );
+}
+
+function renderPDFLinks({ annotations, viewport, layer, document, currentPage, onInternalLink }: { annotations: PDFLinkAnnotation[]; viewport: PDFPageViewport; layer: HTMLDivElement; document: PDFDocument; currentPage: number; onInternalLink: (page: number, offsetRatio?: number) => void }) {
+  layer.replaceChildren();
+  const anchors = annotations
+    .filter(annotation => annotation.subtype === "Link" && Array.isArray(annotation.rect) && annotation.rect.length === 4)
+    .map(annotation => createPDFLink(annotation, viewport, document, currentPage, onInternalLink))
+    .filter((anchor): anchor is HTMLAnchorElement => anchor !== null);
+  layer.replaceChildren(...anchors);
+}
+
+function createPDFLink(annotation: PDFLinkAnnotation, viewport: PDFPageViewport, document: PDFDocument, currentPage: number, onInternalLink: (page: number, offsetRatio?: number) => void) {
+  if (!annotation.rect) return null;
+  const rectangle = viewport.convertToViewportRectangle(annotation.rect);
+  const left = Math.min(rectangle[0], rectangle[2]);
+  const top = Math.min(rectangle[1], rectangle[3]);
+  const width = Math.abs(rectangle[0] - rectangle[2]);
+  const height = Math.abs(rectangle[1] - rectangle[3]);
+  if (width <= 0 || height <= 0) return null;
+
+  const anchor = window.document.createElement("a");
+  anchor.className = "pdf-link";
+  anchor.style.left = `${left / viewport.width * 100}%`;
+  anchor.style.top = `${top / viewport.height * 100}%`;
+  anchor.style.width = `${width / viewport.width * 100}%`;
+  anchor.style.height = `${height / viewport.height * 100}%`;
+  anchor.title = getPDFLinkTitle(annotation);
+  anchor.setAttribute("aria-label", anchor.title || "PDF-ссылка");
+
+  const url = getSafePDFLinkURL(annotation);
+  if (url) {
+    anchor.href = url;
+    anchor.target = "_blank";
+    anchor.rel = "noreferrer";
+    return anchor;
+  }
+
+  const destination = annotation.dest;
+  if (destination) {
+    anchor.href = "#";
+    anchor.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void resolvePDFDestination(document, destination).then(target => {
+        if (target) onInternalLink(target.page, target.offsetRatio);
+      });
+    });
+    return anchor;
+  }
+
+  const targetPage = resolveNamedPDFAction(annotation.action, currentPage, document.numPages);
+  if (targetPage) {
+    anchor.href = "#";
+    anchor.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      onInternalLink(targetPage);
+    });
+    return anchor;
+  }
+
+  return null;
+}
+
+function getSafePDFLinkURL(annotation: PDFLinkAnnotation) {
+  const value = annotation.url || annotation.unsafeUrl;
+  if (!value) return null;
+  try {
+    const url = new URL(value, window.location.href);
+    return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPDFLinkTitle(annotation: PDFLinkAnnotation) {
+  if (typeof annotation.contents === "string") return annotation.contents;
+  if (annotation.contents?.str) return annotation.contents.str;
+  return annotation.url || annotation.unsafeUrl || "Перейти по ссылке";
+}
+
+async function resolvePDFDestination(document: PDFDocument, destination: string | unknown[]): Promise<PDFDestinationTarget | null> {
+  const resolved = typeof destination === "string" ? await document.getDestination(destination) : destination;
+  if (!Array.isArray(resolved) || !resolved[0]) return null;
+  try {
+    const pageIndex = await document.getPageIndex(resolved[0] as any);
+    const page = pageIndex + 1;
+    const pdfPage = await document.getPage(page);
+    const viewport = pdfPage.getViewport({ scale: 1 });
+    return { page, offsetRatio: getPDFDestinationOffsetRatio(resolved, viewport) };
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function getPDFDestinationOffsetRatio(destination: unknown[], viewport: PDFPageViewport) {
+  const mode = getPDFDestinationMode(destination[1]);
+  const top = mode === "XYZ" ? getNumber(destination[3])
+    : mode === "FitH" || mode === "FitBH" ? getNumber(destination[2])
+      : mode === "FitR" ? getNumber(destination[5])
+        : null;
+  if (top === null) return 0;
+  const [, y] = viewport.convertToViewportPoint(0, top);
+  return Math.min(1, Math.max(0, y / viewport.height));
+}
+
+function getPDFDestinationMode(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "name" in value) return String((value as { name?: unknown }).name || "");
+  return "";
+}
+
+function getNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function resolveNamedPDFAction(action: string | undefined, currentPage: number, pages: number) {
+  if (action === "FirstPage") return 1;
+  if (action === "PrevPage") return Math.max(1, currentPage - 1);
+  if (action === "NextPage") return Math.min(pages, currentPage + 1);
+  if (action === "LastPage") return pages;
+  return null;
 }

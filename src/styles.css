@@ -485,6 +485,9 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-page { position: relative; display: grid; place-items: center; width: 100%; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .16); }
 .pdf-page::after { content: attr(data-pdf-page); position: absolute; right: 0; bottom: -19px; color: #888e89; font-size: 9px; }
 .pdf-page canvas { display: block; width: 100%; background: #fff; }
+.pdf-link-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.pdf-link { position: absolute; display: block; border-radius: 2px; cursor: pointer; pointer-events: auto; }
+.pdf-link:hover { outline: 2px solid rgba(40, 88, 76, .35); background: rgba(223, 241, 91, .22); }
 .reader-placeholder { display: grid; place-items: center; height: 100%; padding: 30px; text-align: center; }
 .reader-placeholder div { max-width: 440px; }
 .reader-placeholder h2 { font-family: Georgia, serif; font-weight: 400; }
