@@ -1,0 +1,22 @@
+{
+  "name": "polka-book-reader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "epubjs": "^0.3.93",
+    "pdfjs-dist": "^6.0.227"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "^0.8.13",
+    "esbuild": "^0.28.1"
+  }
+}
