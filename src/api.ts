@@ -87,9 +87,10 @@ export const api = {
     return request<void>(`/api/books/${id}`, { method: "DELETE" });
   },
 
-  async bookBlob(id: string): Promise<Blob> {
+  async bookBlob(id: string, signal?: AbortSignal): Promise<Blob> {
     const response = await fetch(`/api/books/${id}/file`, {
-      headers: token() ? { Authorization: `Bearer ${token()}` } : undefined
+      headers: token() ? { Authorization: `Bearer ${token()}` } : undefined,
+      signal
     });
     if (!response.ok) throw new APIError("Не удалось загрузить файл книги", response.status);
     return response.blob();

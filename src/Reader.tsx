@@ -45,11 +45,36 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    api.bookBlob(book.id)
-      .then(value => { if (!cancelled) setBlob(value); })
-      .catch(caught => { if (!cancelled) setError(caught instanceof Error ? caught.message : "Файл недоступен"); });
-    return () => { cancelled = true; };
+    let disposed = false;
+    const controller = new AbortController();
+    setLiveBook(book);
+    setBlob(null);
+    setError("");
+    registerNavigation({ previous: () => undefined, next: () => undefined });
+
+    const load = async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const value = await api.bookBlob(book.id, controller.signal);
+          if (!disposed) {
+            setBlob(value);
+            setError("");
+          }
+          return;
+        } catch (caught) {
+          if (disposed || controller.signal.aborted) return;
+          if (isAbortError(caught) && attempt === 0) continue;
+          setError(caught instanceof Error ? caught.message : "Файл недоступен");
+          return;
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      disposed = true;
+      controller.abort();
+    };
   }, [book.id]);
 
   const update = useCallback((value: BookUpdate) => {
@@ -102,6 +127,11 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
 
 function ReaderMessage({ title, text }: { title: string; text?: string }) {
   return <div className="reader-placeholder"><div><h2>{title}</h2>{text && <p>{text}</p>}</div></div>;
+}
+
+function isAbortError(value: unknown) {
+  if (value instanceof DOMException && value.name === "AbortError") return true;
+  return value instanceof Error && (value.name === "AbortError" || /aborted|abort/i.test(value.message));
 }
 
 function FB2View({ blob, book, onUpdate, registerNavigation }: ViewProps) {
@@ -197,17 +227,21 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const [document, setDocument] = useState<PDFDocument | null>(null);
+  const [error, setError] = useState("");
   const [ratio, setRatio] = useState("1 / 1.414");
   const [currentPage, setCurrentPage] = useState(book.page || 1);
 
   useEffect(() => {
     let disposed = false;
-    let loadedDocument: PDFDocument | null = null;
     let loadingTask: import("pdfjs-dist").PDFDocumentLoadingTask | null = null;
-    void Promise.all([import("pdfjs-dist"), blob.arrayBuffer()]).then(async ([pdfjs, data]) => {
+    setDocument(null);
+    setError("");
+    void (async () => {
+      const [pdfjs, data] = await Promise.all([import("pdfjs-dist"), blob.arrayBuffer()]);
+      if (disposed) return;
       pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
       loadingTask = pdfjs.getDocument({ data });
-      loadedDocument = await loadingTask.promise;
+      const loadedDocument = await loadingTask.promise;
       if (disposed) {
         void loadingTask.destroy();
         return;
@@ -217,6 +251,9 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       setRatio(`${viewport.width} / ${viewport.height}`);
       setDocument(loadedDocument);
       onUpdate({ pages: loadedDocument.numPages });
+    })().catch(caught => {
+      if (disposed || isAbortError(caught)) return;
+      setError(caught instanceof Error ? caught.message : "PDF не удалось открыть");
     });
     return () => {
       disposed = true;
@@ -265,6 +302,7 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
     }, 70);
   }
 
+  if (error) return <ReaderMessage title="PDF не удалось открыть" text={error}/>;
   if (!document) return <ReaderMessage title="Разбираем PDF…"/>;
   return (
     <div className="pdf-stage" ref={stageRef} onScroll={handleScroll}>
