@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Полка">
+  <rect width="512" height="512" rx="128" fill="#28584c"/>
+  <circle cx="410" cy="108" r="62" fill="#dff15b" opacity=".18"/>
+  <circle cx="104" cy="410" r="86" fill="#173c34" opacity=".28"/>
+  <path d="M126 140c0-28 22-50 50-50h80v332h-80c-28 0-50-22-50-50V140Z" fill="#f7f4ed"/>
+  <path d="M256 90h80c28 0 50 22 50 50v232c0 28-22 50-50 50h-80V90Z" fill="#dff15b"/>
+  <path d="M188 158h-62v214c0 28 22 50 50 50h80V158h-68Z" fill="none" stroke="#173c34" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M324 158h62v214c0 28-22 50-50 50h-80V158h68Z" fill="none" stroke="#173c34" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M256 96v326" stroke="#173c34" stroke-width="28" stroke-linecap="round"/>
+</svg>

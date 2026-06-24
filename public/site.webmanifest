@@ -1,0 +1,17 @@
+{
+  "name": "Полка",
+  "short_name": "Полка",
+  "description": "Простая браузерная читалка для PDF, EPUB и FB2",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f3eb",
+  "theme_color": "#28584c",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
