@@ -9,6 +9,7 @@ type Navigation = { previous: () => void; next: () => void };
 type PDFDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PDFPageProxy = import("pdfjs-dist").PDFPageProxy;
 type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
+type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
 type PDFDestinationTarget = { page: number; offsetRatio: number };
 type PDFLinkAnnotation = {
   subtype?: string;
@@ -319,16 +320,18 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
 function PDFPage({ document, page, active, ratio, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; onInternalLink: (page: number, offsetRatio?: number) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const linkLayerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!active || !wrapperRef.current || !canvasRef.current || !linkLayerRef.current) return;
+    if (!active || !wrapperRef.current || !canvasRef.current || !textLayerRef.current || !linkLayerRef.current) return;
     let task: import("pdfjs-dist").RenderTask | null = null;
+    let textLayer: PDFTextLayer | null = null;
     let cancelled = false;
 
     const render = async () => {
-      const pdfPage = await document.getPage(page);
-      if (cancelled || !wrapperRef.current || !canvasRef.current) return;
+      const [pdfjs, pdfPage] = await Promise.all([import("pdfjs-dist"), document.getPage(page)]);
+      if (cancelled || !wrapperRef.current || !canvasRef.current || !textLayerRef.current) return;
       const base = pdfPage.getViewport({ scale: 1 });
       const width = wrapperRef.current.clientWidth;
       const outputScale = Math.min(window.devicePixelRatio || 1, 2);
@@ -339,9 +342,16 @@ function PDFPage({ document, page, active, ratio, onInternalLink }: { document: 
       canvas.width = Math.floor(viewport.width);
       canvas.height = Math.floor(viewport.height);
       canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`;
+      textLayerRef.current.replaceChildren();
+      textLayerRef.current.style.setProperty("--total-scale-factor", String(cssViewport.scale));
       task = pdfPage.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
+      textLayer = new pdfjs.TextLayer({
+        textContentSource: pdfPage.streamTextContent({ includeMarkedContent: true }),
+        container: textLayerRef.current,
+        viewport: cssViewport
+      });
       const annotations = await pdfPage.getAnnotations({ intent: "display" }) as PDFLinkAnnotation[];
-      await task.promise;
+      await Promise.all([task.promise, textLayer.render()]);
       if (cancelled || !linkLayerRef.current) return;
       renderPDFLinks({
         annotations,
@@ -358,13 +368,15 @@ function PDFPage({ document, page, active, ratio, onInternalLink }: { document: 
     return () => {
       cancelled = true;
       task?.cancel();
+      textLayer?.cancel();
+      textLayerRef.current?.replaceChildren();
       linkLayerRef.current?.replaceChildren();
     };
   }, [active, document, onInternalLink, page]);
 
   return (
     <div className="pdf-page" ref={wrapperRef} data-pdf-page={page} style={{ aspectRatio: ratio }}>
-      {active && <><canvas ref={canvasRef}/><div className="pdf-link-layer" ref={linkLayerRef}/></>}
+      {active && <><canvas ref={canvasRef}/><div className="pdf-text-layer textLayer" ref={textLayerRef}/><div className="pdf-link-layer" ref={linkLayerRef}/></>}
     </div>
   );
 }
