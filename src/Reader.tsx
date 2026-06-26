@@ -10,6 +10,7 @@ type PDFDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PDFPageProxy = import("pdfjs-dist").PDFPageProxy;
 type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
 type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
+type PDFScrollAnchor = { page: number; offsetRatio: number };
 type PDFDestinationTarget = { page: number; offsetRatio: number };
 type PDFLinkAnnotation = {
   subtype?: string;
@@ -20,6 +21,8 @@ type PDFLinkAnnotation = {
   action?: string;
   contents?: string | { str?: string };
 };
+
+const PDF_READING_LINE_RATIO = .38;
 
 interface ReaderProps {
   book: Book;
@@ -227,9 +230,13 @@ function applyEpubTheme(rendition: any, theme: Theme) {
 function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
+  const resizeTimer = useRef<number | undefined>(undefined);
+  const positionRef = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const preservingLayoutRef = useRef(false);
   const [document, setDocument] = useState<PDFDocument | null>(null);
   const [error, setError] = useState("");
   const [ratio, setRatio] = useState("1 / 1.414");
+  const [pageWidth, setPageWidth] = useState(0);
   const [currentPage, setCurrentPage] = useState(book.page || 1);
 
   useEffect(() => {
@@ -265,6 +272,7 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
   const goToPage = useCallback((page: number, offsetRatio = 0) => {
     if (!document || !stageRef.current) return;
     const target = Math.max(1, Math.min(document.numPages, page));
+    positionRef.current = { page: target, offsetRatio };
     const pageElement = stageRef.current.querySelector<HTMLElement>(`[data-pdf-page="${target}"]`);
     if (pageElement) {
       const offset = Math.max(0, pageElement.clientHeight * Math.min(1, Math.max(0, offsetRatio)));
@@ -281,9 +289,58 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
     if (!document || !stageRef.current) return;
     window.requestAnimationFrame(() => {
       const page = Math.max(1, Math.min(document.numPages, book.page || 1));
+      positionRef.current = { page, offsetRatio: 0 };
       const target = stageRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${page}"]`);
       if (target && stageRef.current) stageRef.current.scrollTop = Math.max(0, target.offsetTop - 24);
     });
+  }, [document]);
+
+  useEffect(() => {
+    if (!document || !stageRef.current) return;
+    const stage = stageRef.current;
+    const documentElement = stage.querySelector<HTMLElement>(".pdf-document") || stage;
+    let knownWidth = Math.round(documentElement.clientWidth);
+    setPageWidth(knownWidth);
+
+    const finishPreserving = () => {
+      window.clearTimeout(resizeTimer.current);
+      resizeTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, 260);
+    };
+
+    const restorePosition = () => {
+      preservingLayoutRef.current = true;
+      window.clearTimeout(scrollTimer.current);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (stageRef.current) scrollPDFToAnchor(stageRef.current, positionRef.current);
+          finishPreserving();
+        });
+      });
+    };
+
+    const updateWidth = (width: number) => {
+      const next = Math.round(width);
+      if (!next || Math.abs(next - knownWidth) < 2) return;
+      knownWidth = next;
+      setPageWidth(next);
+      restorePosition();
+    };
+
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(entries => updateWidth(entries[0]?.contentRect.width || documentElement.clientWidth));
+    resizeObserver?.observe(documentElement);
+
+    const handleViewportChange = () => restorePosition();
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("orientationchange", handleViewportChange);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("orientationchange", handleViewportChange);
+      window.clearTimeout(resizeTimer.current);
+    };
   }, [document]);
 
   function handleScroll() {
@@ -291,11 +348,10 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
     scrollTimer.current = window.setTimeout(() => {
       const stage = stageRef.current;
       if (!stage || !document) return;
-      const readingLine = stage.scrollTop + stage.clientHeight * .38;
-      let page = 1;
-      stage.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach(element => {
-        if (element.offsetTop <= readingLine) page = Number(element.dataset.pdfPage);
-      });
+      if (preservingLayoutRef.current) return;
+      const anchor = getPDFScrollAnchor(stage);
+      positionRef.current = anchor;
+      const page = anchor.page;
       if (page !== currentPage) {
         setCurrentPage(page);
         onUpdate({ page, pages: document.numPages, progress: page / document.numPages * 100 });
@@ -310,14 +366,34 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       <div className="pdf-document">
         {Array.from({ length: document.numPages }, (_, index) => {
           const page = index + 1;
-          return <PDFPage key={page} document={document} page={page} active={Math.abs(page - currentPage) <= 3} ratio={ratio} onInternalLink={goToPage}/>;
+          return <PDFPage key={page} document={document} page={page} active={Math.abs(page - currentPage) <= 3} ratio={ratio} pageWidth={pageWidth} onInternalLink={goToPage}/>;
         })}
       </div>
     </div>
   );
 }
 
-function PDFPage({ document, page, active, ratio, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; onInternalLink: (page: number, offsetRatio?: number) => void }) {
+function getPDFScrollAnchor(stage: HTMLElement): PDFScrollAnchor {
+  const readingLine = stage.scrollTop + stage.clientHeight * PDF_READING_LINE_RATIO;
+  let anchor: PDFScrollAnchor = { page: 1, offsetRatio: 0 };
+  stage.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach(element => {
+    if (element.offsetTop <= readingLine) {
+      const page = Number(element.dataset.pdfPage) || 1;
+      const offsetRatio = Math.min(1, Math.max(0, (readingLine - element.offsetTop) / Math.max(1, element.clientHeight)));
+      anchor = { page, offsetRatio };
+    }
+  });
+  return anchor;
+}
+
+function scrollPDFToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
+  const pageElement = stage.querySelector<HTMLElement>(`[data-pdf-page="${anchor.page}"]`);
+  if (!pageElement) return;
+  const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
+  stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
+}
+
+function PDFPage({ document, page, active, ratio, pageWidth, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; pageWidth: number; onInternalLink: (page: number, offsetRatio?: number) => void }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -333,7 +409,7 @@ function PDFPage({ document, page, active, ratio, onInternalLink }: { document: 
       const [pdfjs, pdfPage] = await Promise.all([import("pdfjs-dist"), document.getPage(page)]);
       if (cancelled || !wrapperRef.current || !canvasRef.current || !textLayerRef.current) return;
       const base = pdfPage.getViewport({ scale: 1 });
-      const width = wrapperRef.current.clientWidth;
+      const width = pageWidth || wrapperRef.current.clientWidth;
       const outputScale = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = pdfPage.getViewport({ scale: width / base.width * outputScale });
       const cssViewport = pdfPage.getViewport({ scale: width / base.width });
@@ -372,7 +448,7 @@ function PDFPage({ document, page, active, ratio, onInternalLink }: { document: 
       textLayerRef.current?.replaceChildren();
       linkLayerRef.current?.replaceChildren();
     };
-  }, [active, document, onInternalLink, page]);
+  }, [active, document, onInternalLink, page, pageWidth]);
 
   return (
     <div className="pdf-page" ref={wrapperRef} data-pdf-page={page} style={{ aspectRatio: ratio }}>
