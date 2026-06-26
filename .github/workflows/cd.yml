@@ -1,0 +1,100 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  APP_IMAGE: ghcr.io/${{ github.repository }}/app
+
+jobs:
+  build-app:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            suffix: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            suffix: arm64
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: login to ghcr
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ env.APP_IMAGE }}:${{ github.sha }}-${{ matrix.suffix }}
+          cache-from: type=gha,scope=app-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=app-${{ matrix.suffix }}
+          provenance: false
+
+  merge-manifest:
+    needs: build-app
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: login to ghcr
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: merge app manifest
+        run: |
+          docker manifest create ${{ env.APP_IMAGE }}:${{ github.sha }} \
+            ${{ env.APP_IMAGE }}:${{ github.sha }}-amd64 \
+            ${{ env.APP_IMAGE }}:${{ github.sha }}-arm64
+          docker manifest push ${{ env.APP_IMAGE }}:${{ github.sha }}
+          docker manifest create ${{ env.APP_IMAGE }}:latest \
+            ${{ env.APP_IMAGE }}:${{ github.sha }}-amd64 \
+            ${{ env.APP_IMAGE }}:${{ github.sha }}-arm64
+          docker manifest push ${{ env.APP_IMAGE }}:latest
+
+  update-manifests:
+    needs: merge-manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: install kustomize
+        run: |
+          KUSTOMIZE_VERSION=5.7.1
+          curl -fsSL -o /tmp/kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -C /tmp -xzf /tmp/kustomize.tar.gz kustomize
+          sudo install /tmp/kustomize /usr/local/bin/kustomize
+      - name: update image tag
+        run: |
+          cd k8s/overlays/production
+          kustomize edit set image app=${{ env.APP_IMAGE }}:${{ github.sha }}
+      - name: commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/production/kustomization.yaml
+          git commit -m "ci: update bookreader production image tag ${GITHUB_SHA::7}" || exit 0
+          git pull --rebase origin main
+          git push
