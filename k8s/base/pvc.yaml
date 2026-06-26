@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: bookreader-data
 spec:
-  storageClassName: longhorn
+  storageClassName: local-path
   accessModes:
     - ReadWriteOnce
   resources:
