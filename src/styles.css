@@ -495,6 +495,20 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-link-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .pdf-link { position: absolute; display: block; border-radius: 2px; cursor: pointer; pointer-events: auto; }
 .pdf-link:hover { outline: 2px solid rgba(40, 88, 76, .35); background: rgba(223, 241, 91, .22); }
+.pdf-text-flow-stage { scroll-padding-top: 28px; }
+.pdf-text-flow { width: min(760px, calc(100% - 44px)); margin: 0 auto; padding: 54px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.78; }
+.pdf-text-flow-head { margin-bottom: 34px; }
+.pdf-text-flow-head h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 1.8); line-height: 1.18; }
+.pdf-text-flow-head > p:last-child { max-width: 620px; color: #707871; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 11px; line-height: 1.7; }
+.pdf-text-flow .chapter-author { margin-bottom: 20px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
+.pdf-text-flow-page p { margin-bottom: 1.22em; }
+.pdf-text-page-label, .pdf-text-loading { color: #8a8f8a; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
+.pdf-text-page-label { margin-bottom: 20px; }
+.pdf-empty-page, .pdf-text-loading { color: #7a807b; }
+.reader[data-theme="dark"] .pdf-text-flow { color: #d4d9d5; }
+.reader[data-theme="dark"] .pdf-text-flow-head > p:last-child, .reader[data-theme="dark"] .pdf-empty-page, .reader[data-theme="dark"] .pdf-text-loading { color: #a8b3ad; }
+.reader[data-theme="dark"] .pdf-text-flow-page { border-color: rgba(255,255,255,.12); }
 .reader-placeholder { display: grid; place-items: center; height: 100%; padding: 30px; text-align: center; }
 .reader-placeholder div { max-width: 440px; }
 .reader-placeholder h2 { font-family: Georgia, serif; font-weight: 400; }
@@ -580,11 +594,14 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
   .reader-toolbar { grid-template-columns: auto 1fr auto; padding: 0 9px; }
   .reader-tool-button span { display: none; }
   .reader-title strong { max-width: 180px; }
-  .reader-tools .reader-tool-button:nth-child(2) { display: none; }
   .reader-article { width: calc(100% - 34px); padding-top: 42px; line-height: 1.72; }
   .reader-article h1 { font-size: 28px; }
   .pdf-stage { padding-top: 14px; }
   .pdf-document { gap: 22px; width: calc(100% - 20px); }
+  .pdf-text-flow { width: calc(100% - 32px); padding-top: 34px; font-size: max(var(--reader-size, 19px), 20px); line-height: 1.7; }
+  .pdf-text-flow-head { margin-bottom: 24px; }
+  .pdf-text-flow-head h1 { font-size: 28px; }
+  .pdf-text-flow-page { padding-top: 20px; }
   .reader-footer { grid-template-columns: auto 1fr auto; gap: 10px; padding: 0 11px; }
   .reader-position { display: none; }
 }

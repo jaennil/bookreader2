@@ -5,12 +5,15 @@ import { BackIcon, ChevronIcon } from "./icons";
 import type { Book, BookUpdate } from "./types";
 
 type Theme = "paper" | "sepia" | "dark";
+type PDFMode = "page" | "text";
 type Navigation = { previous: () => void; next: () => void };
 type PDFDocument = import("pdfjs-dist").PDFDocumentProxy;
 type PDFPageProxy = import("pdfjs-dist").PDFPageProxy;
 type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
 type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
 type PDFScrollAnchor = { page: number; offsetRatio: number };
+type PDFTextPage = { page: number; paragraphs: string[] };
+type PDFTextItem = { text: string; x: number; y: number; width: number; height: number };
 type PDFDestinationTarget = { page: number; offsetRatio: number };
 type PDFLinkAnnotation = {
   subtype?: string;
@@ -44,6 +47,11 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("polka-reader-theme") as Theme) || "paper");
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("polka-reader-size")) || 19);
+  const [pdfMode, setPdfMode] = useState<PDFMode>(() => {
+    const saved = localStorage.getItem("polka-pdf-mode") as PDFMode | null;
+    if (saved === "page" || saved === "text") return saved;
+    return window.matchMedia("(max-width: 720px)").matches ? "text" : "page";
+  });
   const [liveBook, setLiveBook] = useState(book);
   const navigation = useRef<Navigation>({ previous: () => undefined, next: () => undefined });
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
@@ -94,9 +102,15 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   }
 
   function cycleFontSize() {
-    const next = fontSize >= 23 ? 17 : fontSize + 2;
+    const next = fontSize >= 29 ? 17 : fontSize + 2;
     setFontSize(next);
     localStorage.setItem("polka-reader-size", String(next));
+  }
+
+  function togglePDFMode() {
+    const next = pdfMode === "text" ? "page" : "text";
+    setPdfMode(next);
+    localStorage.setItem("polka-pdf-mode", next);
   }
 
   return (
@@ -106,13 +120,14 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
         <div className="reader-title"><strong>{liveBook.title}</strong><span>{liveBook.author}</span></div>
         <div className="reader-tools">
           <button className="reader-tool-button" title="Сменить фон" onClick={cycleTheme}>◐</button>
-          {liveBook.format !== "PDF" && <button className="reader-tool-button" title="Размер текста" onClick={cycleFontSize}>Аа</button>}
+          {liveBook.format === "PDF" && <button className="reader-tool-button reader-mode-button" title={pdfMode === "text" ? "Показать оригинал PDF" : "Читать PDF как текст"} onClick={togglePDFMode}>{pdfMode === "text" ? "PDF" : "Текст"}</button>}
+          {(liveBook.format !== "PDF" || pdfMode === "text") && <button className="reader-tool-button" title={`Размер текста: ${fontSize}px`} onClick={cycleFontSize}>Аа</button>}
         </div>
       </header>
       <main className="reader-stage">
         {!blob && !error && <ReaderMessage title="Открываем книгу…"/>}
         {error && <ReaderMessage title="Файл недоступен" text={error}/>}
-        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
+        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode}/>}
         {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
         {blob && liveBook.format === "FB2" && <FB2View blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
       </main>
@@ -227,7 +242,7 @@ function applyEpubTheme(rendition: any, theme: Theme) {
   rendition.themes.override("background", background);
 }
 
-function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
+function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: ViewProps & { mode: PDFMode }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
@@ -270,7 +285,7 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
   }, [blob]);
 
   const goToPage = useCallback((page: number, offsetRatio = 0) => {
-    if (!document || !stageRef.current) return;
+    if (!document || !stageRef.current || mode !== "page") return;
     const target = Math.max(1, Math.min(document.numPages, page));
     positionRef.current = { page: target, offsetRatio };
     const pageElement = stageRef.current.querySelector<HTMLElement>(`[data-pdf-page="${target}"]`);
@@ -278,25 +293,25 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       const offset = Math.max(0, pageElement.clientHeight * Math.min(1, Math.max(0, offsetRatio)));
       stageRef.current.scrollTo({ top: Math.max(0, pageElement.offsetTop + offset - 24), behavior: "smooth" });
     }
-  }, [document]);
+  }, [document, mode]);
 
   useEffect(() => {
-    if (!document) return;
+    if (!document || mode !== "page") return;
     registerNavigation({ previous: () => goToPage(currentPage - 1), next: () => goToPage(currentPage + 1) });
-  }, [currentPage, document, goToPage, registerNavigation]);
+  }, [currentPage, document, goToPage, mode, registerNavigation]);
 
   useEffect(() => {
-    if (!document || !stageRef.current) return;
+    if (!document || !stageRef.current || mode !== "page") return;
     window.requestAnimationFrame(() => {
       const page = Math.max(1, Math.min(document.numPages, book.page || 1));
       positionRef.current = { page, offsetRatio: 0 };
       const target = stageRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${page}"]`);
       if (target && stageRef.current) stageRef.current.scrollTop = Math.max(0, target.offsetTop - 24);
     });
-  }, [document]);
+  }, [document, mode]);
 
   useEffect(() => {
-    if (!document || !stageRef.current) return;
+    if (!document || !stageRef.current || mode !== "page") return;
     const stage = stageRef.current;
     const documentElement = stage.querySelector<HTMLElement>(".pdf-document") || stage;
     let knownWidth = Math.round(documentElement.clientWidth);
@@ -341,13 +356,17 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       window.removeEventListener("orientationchange", handleViewportChange);
       window.clearTimeout(resizeTimer.current);
     };
-  }, [document]);
+  }, [document, mode]);
 
   function handleScroll() {
+    const visibleStage = stageRef.current;
+    if (visibleStage && document && mode === "page" && !preservingLayoutRef.current) {
+      positionRef.current = getPDFScrollAnchor(visibleStage);
+    }
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => {
       const stage = stageRef.current;
-      if (!stage || !document) return;
+      if (!stage || !document || mode !== "page") return;
       if (preservingLayoutRef.current) return;
       const anchor = getPDFScrollAnchor(stage);
       positionRef.current = anchor;
@@ -361,6 +380,9 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
 
   if (error) return <ReaderMessage title="PDF не удалось открыть" text={error}/>;
   if (!document) return <ReaderMessage title="Разбираем PDF…"/>;
+  if (mode === "text") {
+    return <PDFTextFlow document={document} book={book} fontSize={fontSize} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
+  }
   return (
     <div className="pdf-stage" ref={stageRef} onScroll={handleScroll}>
       <div className="pdf-document">
@@ -369,6 +391,139 @@ function PDFView({ blob, book, onUpdate, registerNavigation }: ViewProps) {
           return <PDFPage key={page} document={document} page={page} active={Math.abs(page - currentPage) <= 3} ratio={ratio} pageWidth={pageWidth} onInternalLink={goToPage}/>;
         })}
       </div>
+    </div>
+  );
+}
+
+function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollTimer = useRef<number | undefined>(undefined);
+  const resizeTimer = useRef<number | undefined>(undefined);
+  const restoredRef = useRef(false);
+  const positionRef = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const [pages, setPages] = useState<PDFTextPage[]>([]);
+  const [loaded, setLoaded] = useState(0);
+  const [currentPage, setCurrentPage] = useState(book.page || 1);
+  const hasAnyText = pages.some(page => page.paragraphs.length > 0);
+  const restorePosition = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, positionRef.current));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPages([]);
+    setLoaded(0);
+    restoredRef.current = false;
+    positionRef.current = { page: book.page || 1, offsetRatio: 0 };
+    setCurrentPage(book.page || 1);
+    onUpdate({ pages: document.numPages });
+
+    void (async () => {
+      const extracted: PDFTextPage[] = [];
+      for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+        const pdfPage = await document.getPage(pageNumber);
+        if (cancelled) return;
+        extracted.push({ page: pageNumber, paragraphs: await extractPDFTextParagraphs(pdfPage) });
+        if (cancelled) return;
+        if (pageNumber === 1 || pageNumber % 3 === 0 || pageNumber === document.numPages) {
+          setPages([...extracted]);
+          setLoaded(pageNumber);
+        }
+      }
+    })().catch(error => console.error(error));
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(scrollTimer.current);
+      window.clearTimeout(resizeTimer.current);
+    };
+  }, [book.id, document]);
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    registerNavigation({
+      previous: () => scroll.scrollBy({ top: -scroll.clientHeight * .86, behavior: "smooth" }),
+      next: () => scroll.scrollBy({ top: scroll.clientHeight * .86, behavior: "smooth" })
+    });
+  }, [registerNavigation]);
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || restoredRef.current || pages.length === 0) return;
+    const targetPage = Math.max(1, Math.min(document.numPages, book.page || 1));
+    if (!pages.some(page => page.page === targetPage)) return;
+    restoredRef.current = true;
+    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, { page: targetPage, offsetRatio: 0 }));
+  }, [book.page, document.numPages, pages]);
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || pages.length === 0) return;
+    const anchor = positionRef.current;
+    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, anchor));
+  }, [pages.length]);
+
+  useEffect(() => {
+    restorePosition();
+  }, [fontSize, restorePosition]);
+
+  useEffect(() => {
+    const handleViewportChange = () => {
+      window.clearTimeout(resizeTimer.current);
+      resizeTimer.current = window.setTimeout(restorePosition, 220);
+    };
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("orientationchange", handleViewportChange);
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("orientationchange", handleViewportChange);
+      window.clearTimeout(resizeTimer.current);
+    };
+  }, [restorePosition]);
+
+  const rememberAnchor = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return positionRef.current;
+    const anchor = getPDFTextScrollAnchor(scroll);
+    positionRef.current = anchor;
+    return anchor;
+  }, []);
+
+  function handleScroll() {
+    rememberAnchor();
+    window.clearTimeout(scrollTimer.current);
+    scrollTimer.current = window.setTimeout(() => {
+      const anchor = rememberAnchor();
+      if (anchor.page !== currentPage) {
+        setCurrentPage(anchor.page);
+        onUpdate({ page: anchor.page, pages: document.numPages, progress: anchor.page / document.numPages * 100 });
+      }
+    }, 120);
+  }
+
+  return (
+    <div className="pdf-text-flow-stage reader-scroll" ref={scrollRef} onScroll={handleScroll}>
+      <article className="pdf-text-flow">
+        <header className="pdf-text-flow-head">
+          <p className="eyebrow">PDF в текстовом режиме</p>
+          <h1>{book.title}</h1>
+          <div className="chapter-author">{book.author}</div>
+          <p>Текст извлечён из PDF и перевёрстан для телефона. Если в книге есть сложные схемы или таблицы, переключитесь в режим PDF.</p>
+        </header>
+        {pages.map(page => (
+          <section className="pdf-text-flow-page" key={page.page} data-pdf-text-page={page.page}>
+            <div className="pdf-text-page-label">Страница {page.page}</div>
+            {page.paragraphs.length
+              ? page.paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>)
+              : <p className="pdf-empty-page">На этой странице не найден текстовый слой.</p>}
+          </section>
+        ))}
+        {loaded < document.numPages && <div className="pdf-text-loading">Извлекаем текст: {loaded} / {document.numPages}</div>}
+        {loaded === document.numPages && !hasAnyText && <div className="pdf-text-loading">В этом PDF не найден текстовый слой. Похоже, это скан — используйте оригинальный PDF-режим.</div>}
+      </article>
     </div>
   );
 }
@@ -391,6 +546,136 @@ function scrollPDFToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
   if (!pageElement) return;
   const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
   stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
+}
+
+function getPDFTextScrollAnchor(stage: HTMLElement): PDFScrollAnchor {
+  const readingLine = stage.scrollTop + stage.clientHeight * PDF_READING_LINE_RATIO;
+  let anchor: PDFScrollAnchor = { page: 1, offsetRatio: 0 };
+  stage.querySelectorAll<HTMLElement>("[data-pdf-text-page]").forEach(element => {
+    if (element.offsetTop <= readingLine) {
+      const page = Number(element.dataset.pdfTextPage) || 1;
+      const offsetRatio = Math.min(1, Math.max(0, (readingLine - element.offsetTop) / Math.max(1, element.clientHeight)));
+      anchor = { page, offsetRatio };
+    }
+  });
+  return anchor;
+}
+
+function scrollPDFTextToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
+  const pageElement = stage.querySelector<HTMLElement>(`[data-pdf-text-page="${anchor.page}"]`);
+  if (!pageElement) return;
+  const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
+  stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
+}
+
+async function extractPDFTextParagraphs(page: PDFPageProxy) {
+  const content = await page.getTextContent();
+  const rawItems = (content.items as unknown[])
+    .map(item => normalizePDFTextItem(item))
+    .filter((item): item is PDFTextItem => Boolean(item?.text.trim()));
+  if (!rawItems.length) return [];
+
+  const sorted = rawItems.sort((left, right) => Math.abs(right.y - left.y) > 3 ? right.y - left.y : left.x - right.x);
+  const lines: { items: PDFTextItem[]; y: number; height: number }[] = [];
+  for (const item of sorted) {
+    const current = lines[lines.length - 1];
+    if (!current || Math.abs(current.y - item.y) > Math.max(2.5, item.height * .28)) {
+      lines.push({ items: [item], y: item.y, height: item.height });
+      continue;
+    }
+    current.items.push(item);
+    current.y = (current.y + item.y) / 2;
+    current.height = Math.max(current.height, item.height);
+  }
+
+  const cleanLines = lines
+    .map(line => ({ text: renderPDFTextLine(line), y: line.y }))
+    .filter(line => line.text.length > 0);
+  if (!cleanLines.length) return [];
+
+  const gaps = cleanLines.slice(1)
+    .map((line, index) => Math.abs(cleanLines[index].y - line.y))
+    .filter(gap => gap > 0);
+  const medianGap = median(gaps) || 12;
+  const paragraphs: string[] = [];
+  let paragraph = "";
+
+  cleanLines.forEach((line, index) => {
+    const previous = cleanLines[index - 1];
+    const gap = previous ? Math.abs(previous.y - line.y) : 0;
+    const startsNewParagraph = Boolean(previous && gap > medianGap * 1.55);
+    if (!paragraph || startsNewParagraph) {
+      if (paragraph) paragraphs.push(paragraph);
+      paragraph = line.text;
+      return;
+    }
+    paragraph = mergePDFTextLine(paragraph, line.text);
+  });
+  if (paragraph) paragraphs.push(paragraph);
+
+  return paragraphs.filter(text => text.trim().length > 0);
+}
+
+function normalizePDFTextItem(item: unknown) {
+  if (!item || typeof item !== "object" || !("str" in item)) return null;
+  const value = item as { str?: unknown; transform?: unknown; width?: unknown; height?: unknown };
+  if (typeof value.str !== "string") return null;
+  const transform = Array.isArray(value.transform) ? value.transform : [];
+  const x = typeof transform[4] === "number" ? transform[4] : 0;
+  const y = typeof transform[5] === "number" ? transform[5] : 0;
+  const height = typeof value.height === "number" && Number.isFinite(value.height) ? value.height : 10;
+  const width = typeof value.width === "number" && Number.isFinite(value.width) ? value.width : Math.max(0, value.str.length * height * .45);
+  return { text: value.str, x, y, width, height };
+}
+
+function renderPDFTextLine(line: { items: PDFTextItem[]; height: number }) {
+  const items = [...line.items].sort((left, right) => left.x - right.x);
+  const spaceGap = Math.max(1.8, line.height * .22);
+  let result = "";
+  let previous: PDFTextItem | null = null;
+  let pendingSpace = false;
+
+  for (const item of items) {
+    const normalized = item.text.replace(/\s+/g, " ");
+    const text = normalized.trim();
+    if (!text) {
+      pendingSpace = pendingSpace || normalized.length > 0;
+      previous = item;
+      continue;
+    }
+    const gap = previous ? item.x - (previous.x + previous.width) : 0;
+    const needsSpace = Boolean(previous && (pendingSpace || /^\s/.test(normalized) || gap > spaceGap));
+    result = appendPDFTextRun(result, text, needsSpace);
+    pendingSpace = /\s$/.test(normalized);
+    previous = item;
+  }
+
+  return result.replace(/\s+/g, " ").trim();
+}
+
+function appendPDFText(left: string, right: string) {
+  return appendPDFTextRun(left, right, true);
+}
+
+function appendPDFTextRun(left: string, right: string, insertSpace: boolean) {
+  const text = right.trim();
+  if (!text) return left;
+  if (!left) return text;
+  if (/^[,.;:!?…%)\]}»”]/.test(text)) return left + text;
+  if (/[(\[{«“]$/.test(left)) return left + text;
+  if (!insertSpace) return left + text;
+  return `${left} ${text}`;
+}
+
+function mergePDFTextLine(paragraph: string, line: string) {
+  if (paragraph.endsWith("-")) return paragraph.slice(0, -1) + line;
+  return appendPDFText(paragraph, line);
+}
+
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
 }
 
 function PDFPage({ document, page, active, ratio, pageWidth, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; pageWidth: number; onInternalLink: (page: number, offsetRatio?: number) => void }) {
