@@ -53,6 +53,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     return window.matchMedia("(max-width: 720px)").matches ? "text" : "page";
   });
   const [liveBook, setLiveBook] = useState(book);
+  const pdfAnchor = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
   const navigation = useRef<Navigation>({ previous: () => undefined, next: () => undefined });
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
 
@@ -60,6 +61,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     let disposed = false;
     const controller = new AbortController();
     setLiveBook(book);
+    pdfAnchor.current = { page: book.page || 1, offsetRatio: 0 };
     setBlob(null);
     setError("");
     registerNavigation({ previous: () => undefined, next: () => undefined });
@@ -94,6 +96,10 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     onUpdate(value);
   }, [onUpdate]);
 
+  const rememberPDFAnchor = useCallback((anchor: PDFScrollAnchor) => {
+    pdfAnchor.current = normalizePDFAnchor(anchor);
+  }, []);
+
   function cycleTheme() {
     const themes: Theme[] = ["paper", "sepia", "dark"];
     const next = themes[(themes.indexOf(theme) + 1) % themes.length];
@@ -109,6 +115,9 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
 
   function togglePDFMode() {
     const next = pdfMode === "text" ? "page" : "text";
+    const anchor = normalizePDFAnchor(pdfAnchor.current, liveBook.pages);
+    pdfAnchor.current = anchor;
+    if (liveBook.format === "PDF") update(getPDFAnchorUpdate(anchor, liveBook.pages));
     setPdfMode(next);
     localStorage.setItem("polka-pdf-mode", next);
   }
@@ -127,7 +136,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
       <main className="reader-stage">
         {!blob && !error && <ReaderMessage title="Открываем книгу…"/>}
         {error && <ReaderMessage title="Файл недоступен" text={error}/>}
-        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode}/>}
+        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor}/>}
         {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
         {blob && liveBook.format === "FB2" && <FB2View blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
       </main>
@@ -242,11 +251,11 @@ function applyEpubTheme(rendition: any, theme: Theme) {
   rendition.themes.override("background", background);
 }
 
-function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: ViewProps & { mode: PDFMode }) {
+function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, initialAnchor, onAnchorChange }: ViewProps & { mode: PDFMode; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
-  const positionRef = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const positionRef = useRef<PDFScrollAnchor>(initialAnchor);
   const preservingLayoutRef = useRef(false);
   const [document, setDocument] = useState<PDFDocument | null>(null);
   const [error, setError] = useState("");
@@ -284,16 +293,25 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: V
     };
   }, [blob]);
 
+  const rememberAnchor = useCallback((anchor: PDFScrollAnchor) => {
+    const next = normalizePDFAnchor(anchor, document?.numPages);
+    positionRef.current = next;
+    onAnchorChange(next);
+    return next;
+  }, [document?.numPages, onAnchorChange]);
+
   const goToPage = useCallback((page: number, offsetRatio = 0) => {
     if (!document || !stageRef.current || mode !== "page") return;
     const target = Math.max(1, Math.min(document.numPages, page));
-    positionRef.current = { page: target, offsetRatio };
+    const anchor = rememberAnchor({ page: target, offsetRatio });
+    setCurrentPage(target);
+    onUpdate(getPDFAnchorUpdate(anchor, document.numPages));
     const pageElement = stageRef.current.querySelector<HTMLElement>(`[data-pdf-page="${target}"]`);
     if (pageElement) {
       const offset = Math.max(0, pageElement.clientHeight * Math.min(1, Math.max(0, offsetRatio)));
       stageRef.current.scrollTo({ top: Math.max(0, pageElement.offsetTop + offset - 24), behavior: "smooth" });
     }
-  }, [document, mode]);
+  }, [document, mode, onUpdate, rememberAnchor]);
 
   useEffect(() => {
     if (!document || mode !== "page") return;
@@ -303,10 +321,9 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: V
   useEffect(() => {
     if (!document || !stageRef.current || mode !== "page") return;
     window.requestAnimationFrame(() => {
-      const page = Math.max(1, Math.min(document.numPages, book.page || 1));
-      positionRef.current = { page, offsetRatio: 0 };
-      const target = stageRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${page}"]`);
-      if (target && stageRef.current) stageRef.current.scrollTop = Math.max(0, target.offsetTop - 24);
+      const anchor = rememberAnchor(initialAnchor);
+      const target = stageRef.current?.querySelector<HTMLElement>(`[data-pdf-page="${anchor.page}"]`);
+      if (target && stageRef.current) scrollPDFToAnchor(stageRef.current, anchor);
     });
   }, [document, mode]);
 
@@ -361,27 +378,26 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: V
   function handleScroll() {
     const visibleStage = stageRef.current;
     if (visibleStage && document && mode === "page" && !preservingLayoutRef.current) {
-      positionRef.current = getPDFScrollAnchor(visibleStage);
+      rememberAnchor(getPDFScrollAnchor(visibleStage));
     }
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => {
       const stage = stageRef.current;
       if (!stage || !document || mode !== "page") return;
       if (preservingLayoutRef.current) return;
-      const anchor = getPDFScrollAnchor(stage);
-      positionRef.current = anchor;
+      const anchor = rememberAnchor(getPDFScrollAnchor(stage));
       const page = anchor.page;
       if (page !== currentPage) {
         setCurrentPage(page);
-        onUpdate({ page, pages: document.numPages, progress: page / document.numPages * 100 });
       }
+      onUpdate(getPDFAnchorUpdate(anchor, document.numPages));
     }, 70);
   }
 
   if (error) return <ReaderMessage title="PDF не удалось открыть" text={error}/>;
   if (!document) return <ReaderMessage title="Разбираем PDF…"/>;
   if (mode === "text") {
-    return <PDFTextFlow document={document} book={book} fontSize={fontSize} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
+    return <PDFTextFlow document={document} book={book} fontSize={fontSize} initialAnchor={initialAnchor} onAnchorChange={onAnchorChange} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
   }
   return (
     <div className="pdf-stage" ref={stageRef} onScroll={handleScroll}>
@@ -395,12 +411,12 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode }: V
   );
 }
 
-function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
+function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
   const restoredRef = useRef(false);
-  const positionRef = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const positionRef = useRef<PDFScrollAnchor>(initialAnchor);
   const [pages, setPages] = useState<PDFTextPage[]>([]);
   const [loaded, setLoaded] = useState(0);
   const [currentPage, setCurrentPage] = useState(book.page || 1);
@@ -408,7 +424,10 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
   const restorePosition = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, positionRef.current));
+    window.requestAnimationFrame(() => {
+      scrollPDFTextToAnchor(scroll, positionRef.current);
+      onAnchorChange(positionRef.current);
+    });
   }, []);
 
   useEffect(() => {
@@ -416,8 +435,10 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
     setPages([]);
     setLoaded(0);
     restoredRef.current = false;
-    const startPage = Math.max(1, Math.min(document.numPages, book.page || 1));
-    positionRef.current = { page: startPage, offsetRatio: 0 };
+    const anchor = normalizePDFAnchor(initialAnchor, document.numPages);
+    const startPage = anchor.page;
+    positionRef.current = anchor;
+    onAnchorChange(anchor);
     setCurrentPage(startPage);
     onUpdate({ pages: document.numPages });
 
@@ -460,10 +481,12 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || restoredRef.current || pages.length === 0) return;
-    const targetPage = Math.max(1, Math.min(document.numPages, book.page || 1));
-    if (!pages.some(page => page.page === targetPage)) return;
+    const targetAnchor = normalizePDFAnchor(initialAnchor, document.numPages);
+    if (!pages.some(page => page.page === targetAnchor.page)) return;
     restoredRef.current = true;
-    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, { page: targetPage, offsetRatio: 0 }));
+    positionRef.current = targetAnchor;
+    onAnchorChange(targetAnchor);
+    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, targetAnchor));
   }, [book.page, document.numPages, pages]);
 
   useEffect(() => {
@@ -494,10 +517,11 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
   const rememberAnchor = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return positionRef.current;
-    const anchor = getPDFTextScrollAnchor(scroll);
+    const anchor = normalizePDFAnchor(getPDFTextScrollAnchor(scroll), document.numPages);
     positionRef.current = anchor;
+    onAnchorChange(anchor);
     return anchor;
-  }, []);
+  }, [document.numPages, onAnchorChange]);
 
   function handleScroll() {
     rememberAnchor();
@@ -506,8 +530,8 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
       const anchor = rememberAnchor();
       if (anchor.page !== currentPage) {
         setCurrentPage(anchor.page);
-        onUpdate({ page: anchor.page, pages: document.numPages, progress: anchor.page / document.numPages * 100 });
       }
+      onUpdate(getPDFAnchorUpdate(anchor, document.numPages));
     }, 120);
   }
 
@@ -553,6 +577,24 @@ function scrollPDFToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
   if (!pageElement) return;
   const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
   stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
+}
+
+function normalizePDFAnchor(anchor: PDFScrollAnchor, totalPages?: number): PDFScrollAnchor {
+  const maximum = totalPages && totalPages > 0 ? totalPages : Number.MAX_SAFE_INTEGER;
+  return {
+    page: Math.max(1, Math.min(maximum, Math.round(anchor.page) || 1)),
+    offsetRatio: Math.max(0, Math.min(1, anchor.offsetRatio || 0))
+  };
+}
+
+function getPDFAnchorUpdate(anchor: PDFScrollAnchor, totalPages?: number): BookUpdate {
+  const safeAnchor = normalizePDFAnchor(anchor, totalPages);
+  if (!totalPages || totalPages <= 0) return { page: safeAnchor.page };
+  return {
+    page: safeAnchor.page,
+    pages: totalPages,
+    progress: Math.max(0, Math.min(100, (safeAnchor.page - 1 + safeAnchor.offsetRatio) / totalPages * 100))
+  };
 }
 
 function getPDFTextExtractionOrder(startPage: number, totalPages: number) {
