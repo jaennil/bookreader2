@@ -12,6 +12,7 @@ type PDFPageProxy = import("pdfjs-dist").PDFPageProxy;
 type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
 type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
 type PDFScrollAnchor = { page: number; offsetRatio: number };
+type PDFAnchorCapture = () => PDFScrollAnchor;
 type PDFTextPage = { page: number; paragraphs: string[] };
 type PDFTextItem = { text: string; x: number; y: number; width: number; height: number };
 type PDFDestinationTarget = { page: number; offsetRatio: number };
@@ -55,6 +56,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   });
   const [liveBook, setLiveBook] = useState(book);
   const pdfAnchor = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const capturePDFAnchor = useRef<PDFAnchorCapture>(() => pdfAnchor.current);
   const navigation = useRef<Navigation>({ previous: () => undefined, next: () => undefined });
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
 
@@ -101,6 +103,10 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     pdfAnchor.current = normalizePDFAnchor(anchor);
   }, []);
 
+  const registerPDFAnchorCapture = useCallback((capture: PDFAnchorCapture | null) => {
+    capturePDFAnchor.current = capture || (() => pdfAnchor.current);
+  }, []);
+
   function cycleTheme() {
     const themes: Theme[] = ["paper", "sepia", "dark"];
     const next = themes[(themes.indexOf(theme) + 1) % themes.length];
@@ -116,7 +122,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
 
   function togglePDFMode() {
     const next = pdfMode === "text" ? "page" : "text";
-    const anchor = normalizePDFAnchor(pdfAnchor.current, liveBook.pages);
+    const anchor = normalizePDFAnchor(capturePDFAnchor.current(), liveBook.pages);
     pdfAnchor.current = anchor;
     if (liveBook.format === "PDF") update(getPDFAnchorUpdate(anchor, liveBook.pages));
     setPdfMode(next);
@@ -137,7 +143,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
       <main className="reader-stage">
         {!blob && !error && <ReaderMessage title="Открываем книгу…"/>}
         {error && <ReaderMessage title="Файл недоступен" text={error}/>}
-        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor}/>}
+        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor} onAnchorCaptureReady={registerPDFAnchorCapture}/>}
         {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
         {blob && liveBook.format === "FB2" && <FB2View blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
       </main>
@@ -252,7 +258,7 @@ function applyEpubTheme(rendition: any, theme: Theme) {
   rendition.themes.override("background", background);
 }
 
-function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, initialAnchor, onAnchorChange }: ViewProps & { mode: PDFMode; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void }) {
+function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, initialAnchor, onAnchorChange, onAnchorCaptureReady }: ViewProps & { mode: PDFMode; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onAnchorCaptureReady: (capture: PDFAnchorCapture | null) => void }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
@@ -300,6 +306,16 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
     onAnchorChange(next);
     return next;
   }, [document?.numPages, onAnchorChange]);
+
+  useEffect(() => {
+    if (!document || mode !== "page") return;
+    onAnchorCaptureReady(() => {
+      const stage = stageRef.current;
+      if (!stage) return positionRef.current;
+      return rememberAnchor(getPDFScrollAnchor(stage));
+    });
+    return () => onAnchorCaptureReady(null);
+  }, [document, mode, onAnchorCaptureReady, rememberAnchor]);
 
   const goToPage = useCallback((page: number, offsetRatio = 0) => {
     if (!document || !stageRef.current || mode !== "page") return;
@@ -398,7 +414,7 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
   if (error) return <ReaderMessage title="PDF не удалось открыть" text={error}/>;
   if (!document) return <ReaderMessage title="Разбираем PDF…"/>;
   if (mode === "text") {
-    return <PDFTextFlow document={document} book={book} fontSize={fontSize} initialAnchor={initialAnchor} onAnchorChange={onAnchorChange} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
+    return <PDFTextFlow document={document} book={book} fontSize={fontSize} initialAnchor={initialAnchor} onAnchorChange={onAnchorChange} onAnchorCaptureReady={onAnchorCaptureReady} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
   }
   return (
     <div className="pdf-stage" ref={stageRef} onScroll={handleScroll}>
@@ -412,7 +428,7 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
   );
 }
 
-function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
+function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, onAnchorCaptureReady, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onAnchorCaptureReady: (capture: PDFAnchorCapture | null) => void; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
@@ -535,6 +551,11 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
     onAnchorChange(anchor);
     return anchor;
   }, [document.numPages, onAnchorChange]);
+
+  useEffect(() => {
+    onAnchorCaptureReady(() => rememberAnchor());
+    return () => onAnchorCaptureReady(null);
+  }, [onAnchorCaptureReady, rememberAnchor]);
 
   function handleScroll() {
     if (preservingLayoutRef.current) return;
