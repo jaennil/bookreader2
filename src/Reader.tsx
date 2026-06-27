@@ -26,6 +26,7 @@ type PDFLinkAnnotation = {
 };
 
 const PDF_READING_LINE_RATIO = .38;
+const PDF_TEXT_LAYOUT_PRESERVE_MS = 1100;
 
 interface ReaderProps {
   book: Book;
@@ -431,7 +432,7 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
     window.requestAnimationFrame(() => {
       scrollPDFTextToAnchor(scroll, positionRef.current);
       onAnchorChange(positionRef.current);
-      preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, 260);
+      preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, PDF_TEXT_LAYOUT_PRESERVE_MS);
     });
   }, [onAnchorChange]);
 
@@ -504,7 +505,7 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
     preservingLayoutRef.current = true;
     window.clearTimeout(preserveTimer.current);
     scrollPDFTextToAnchor(scroll, positionRef.current);
-    preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, 260);
+    preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, PDF_TEXT_LAYOUT_PRESERVE_MS);
     return () => window.clearTimeout(preserveTimer.current);
   }, [pages.length]);
 
