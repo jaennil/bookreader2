@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import { BackIcon, ChevronIcon } from "./icons";
@@ -415,6 +415,8 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
+  const preserveTimer = useRef<number | undefined>(undefined);
+  const preservingLayoutRef = useRef(false);
   const restoredRef = useRef(false);
   const positionRef = useRef<PDFScrollAnchor>(initialAnchor);
   const [pages, setPages] = useState<PDFTextPage[]>([]);
@@ -424,11 +426,14 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   const restorePosition = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
+    preservingLayoutRef.current = true;
+    window.clearTimeout(preserveTimer.current);
     window.requestAnimationFrame(() => {
       scrollPDFTextToAnchor(scroll, positionRef.current);
       onAnchorChange(positionRef.current);
+      preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, 260);
     });
-  }, []);
+  }, [onAnchorChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -469,6 +474,7 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
       cancelled = true;
       window.clearTimeout(scrollTimer.current);
       window.clearTimeout(resizeTimer.current);
+      window.clearTimeout(preserveTimer.current);
     };
   }, [book.id, document]);
 
@@ -492,11 +498,14 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
     window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, targetAnchor));
   }, [book.page, document.numPages, pages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || pages.length === 0) return;
-    const anchor = positionRef.current;
-    window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, anchor));
+    preservingLayoutRef.current = true;
+    window.clearTimeout(preserveTimer.current);
+    scrollPDFTextToAnchor(scroll, positionRef.current);
+    preserveTimer.current = window.setTimeout(() => { preservingLayoutRef.current = false; }, 260);
+    return () => window.clearTimeout(preserveTimer.current);
   }, [pages.length]);
 
   useEffect(() => {
@@ -527,9 +536,11 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   }, [document.numPages, onAnchorChange]);
 
   function handleScroll() {
+    if (preservingLayoutRef.current) return;
     rememberAnchor();
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => {
+      if (preservingLayoutRef.current) return;
       const anchor = rememberAnchor();
       if (anchor.page !== currentPage) {
         setCurrentPage(anchor.page);
