@@ -37,3 +37,8 @@ export interface BookUpdate {
   pages?: number;
   favorite?: boolean;
 }
+
+export interface PDFTextPagePayload {
+  page: number;
+  paragraphs: string[];
+}

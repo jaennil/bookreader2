@@ -16,7 +16,7 @@ COPY backend ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/bookreader ./cmd/server
 
 FROM alpine:3.22
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates poppler-utils tzdata
 WORKDIR /app
 
 COPY --from=api-builder /out/bookreader /app/bookreader

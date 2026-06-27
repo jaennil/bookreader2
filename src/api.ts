@@ -1,4 +1,4 @@
-import type { AuthPayload, Book, BookUpdate, User } from "./types";
+import type { AuthPayload, Book, BookUpdate, PDFTextPagePayload, User } from "./types";
 
 const TOKEN_KEY = "polka-auth-token";
 
@@ -85,6 +85,11 @@ export const api = {
 
   deleteBook(id: string) {
     return request<void>(`/api/books/${id}`, { method: "DELETE" });
+  },
+
+  pdfTextPage(id: string, page: number, pages: number) {
+    const query = new URLSearchParams({ page: String(page), pages: String(pages) });
+    return request<{ pages: PDFTextPagePayload[] }>(`/api/books/${id}/pdf-text?${query}`);
   },
 
   async bookBlob(id: string, signal?: AbortSignal): Promise<Blob> {

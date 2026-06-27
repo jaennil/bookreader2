@@ -454,6 +454,9 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
         } catch (error) {
           console.error(`PDF text extraction failed on page ${pageNumber}`, error);
         }
+        if (!paragraphs.length) {
+          paragraphs = await extractPDFTextParagraphsFromServer(book.id, pageNumber, document.numPages);
+        }
         if (cancelled) return;
         extracted.set(pageNumber, { page: pageNumber, paragraphs });
         setPages(Array.from(extracted.values()).sort((left, right) => left.page - right.page));
@@ -675,6 +678,16 @@ async function extractPDFTextParagraphs(page: PDFPageProxy) {
   if (paragraph) paragraphs.push(paragraph);
 
   return paragraphs.filter(text => text.trim().length > 0);
+}
+
+async function extractPDFTextParagraphsFromServer(bookId: string, page: number, pages: number) {
+  try {
+    const response = await api.pdfTextPage(bookId, page, pages);
+    return response.pages.find(item => item.page === page)?.paragraphs || [];
+  } catch (error) {
+    console.error(`Server PDF text fallback failed on page ${page}`, error);
+    return [];
+  }
 }
 
 function normalizePDFTextItem(item: unknown) {

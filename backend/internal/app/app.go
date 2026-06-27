@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -143,6 +145,7 @@ func (a *App) routes() {
 	a.mux.HandleFunc("PATCH /api/books/{id}", a.updateBook)
 	a.mux.HandleFunc("DELETE /api/books/{id}", a.deleteBook)
 	a.mux.HandleFunc("GET /api/books/{id}/file", a.bookFile)
+	a.mux.HandleFunc("GET /api/books/{id}/pdf-text", a.pdfText)
 	a.mux.HandleFunc("/", a.frontend)
 }
 
@@ -446,6 +449,116 @@ func (a *App) bookFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": book.OriginalName}))
 	http.ServeFile(w, r, filepath.Join(a.dataDir, bookDirectory, book.StoredName))
+}
+
+type pdfTextPage struct {
+	Page       int      `json:"page"`
+	Paragraphs []string `json:"paragraphs"`
+}
+
+func (a *App) pdfText(w http.ResponseWriter, r *http.Request) {
+	userID, _, ok := a.authenticate(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Требуется вход")
+		return
+	}
+	a.mu.RLock()
+	book, exists := a.state.Books[r.PathValue("id")]
+	a.mu.RUnlock()
+	if !exists || book.UserID != userID {
+		writeError(w, http.StatusNotFound, "Книга не найдена")
+		return
+	}
+	if book.Format != "PDF" {
+		writeError(w, http.StatusBadRequest, "Текстовый fallback доступен только для PDF")
+		return
+	}
+
+	totalPages := max(1, queryInt(r, "pages", book.Pages))
+	from := queryInt(r, "from", queryInt(r, "page", max(1, book.Page)))
+	to := queryInt(r, "to", from)
+	from = max(1, min(totalPages, from))
+	to = max(from, min(totalPages, to))
+	if to-from > 9 {
+		to = from + 9
+	}
+
+	filePath := filepath.Join(a.dataDir, bookDirectory, book.StoredName)
+	pages := make([]pdfTextPage, 0, to-from+1)
+	for page := from; page <= to; page++ {
+		paragraphs, err := extractPDFTextPage(r.Context(), filePath, page)
+		if err != nil {
+			log.Printf("pdf text fallback page %d: %v", page, err)
+			paragraphs = nil
+		}
+		pages = append(pages, pdfTextPage{Page: page, Paragraphs: paragraphs})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pages": pages})
+}
+
+func extractPDFTextPage(ctx context.Context, filePath string, page int) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-layout", filePath, "-").Output()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return splitExtractedPDFText(string(output)), nil
+}
+
+func splitExtractedPDFText(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\f", "\n")
+	blocks := strings.Split(text, "\n\n")
+	paragraphs := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		lines := strings.Split(block, "\n")
+		paragraph := ""
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			paragraph = mergeExtractedPDFLine(paragraph, line)
+		}
+		if paragraph != "" {
+			paragraphs = append(paragraphs, paragraph)
+		}
+	}
+	return paragraphs
+}
+
+func mergeExtractedPDFLine(paragraph, line string) string {
+	if paragraph == "" {
+		return strings.Join(strings.Fields(line), " ")
+	}
+	line = strings.Join(strings.Fields(line), " ")
+	if strings.HasSuffix(paragraph, "-") {
+		return strings.TrimSuffix(paragraph, "-") + line
+	}
+	if strings.HasSuffix(paragraph, "«") || strings.HasSuffix(paragraph, "“") || strings.HasSuffix(paragraph, "(") {
+		return paragraph + line
+	}
+	if strings.HasPrefix(line, ".") || strings.HasPrefix(line, ",") || strings.HasPrefix(line, ";") || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "!") || strings.HasPrefix(line, "?") || strings.HasPrefix(line, "»") || strings.HasPrefix(line, "”") || strings.HasPrefix(line, ")") {
+		return paragraph + line
+	}
+	return paragraph + " " + line
+}
+
+func queryInt(r *http.Request, name string, fallback int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(name))
+	if value == "" {
+		return fallback
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return number
 }
 
 func (a *App) frontend(w http.ResponseWriter, r *http.Request) {
