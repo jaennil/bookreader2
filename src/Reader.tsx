@@ -416,21 +416,28 @@ function PDFTextFlow({ document, book, fontSize, onUpdate, registerNavigation }:
     setPages([]);
     setLoaded(0);
     restoredRef.current = false;
-    positionRef.current = { page: book.page || 1, offsetRatio: 0 };
-    setCurrentPage(book.page || 1);
+    const startPage = Math.max(1, Math.min(document.numPages, book.page || 1));
+    positionRef.current = { page: startPage, offsetRatio: 0 };
+    setCurrentPage(startPage);
     onUpdate({ pages: document.numPages });
 
     void (async () => {
-      const extracted: PDFTextPage[] = [];
-      for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-        const pdfPage = await document.getPage(pageNumber);
-        if (cancelled) return;
-        extracted.push({ page: pageNumber, paragraphs: await extractPDFTextParagraphs(pdfPage) });
-        if (cancelled) return;
-        if (pageNumber === 1 || pageNumber % 3 === 0 || pageNumber === document.numPages) {
-          setPages([...extracted]);
-          setLoaded(pageNumber);
+      const extracted = new Map<number, PDFTextPage>();
+      for (const pageNumber of getPDFTextExtractionOrder(startPage, document.numPages)) {
+        let paragraphs: string[] = [];
+        try {
+          const pdfPage = await document.getPage(pageNumber);
+          if (cancelled) return;
+          paragraphs = await extractPDFTextParagraphs(pdfPage);
+          pdfPage.cleanup();
+        } catch (error) {
+          console.error(`PDF text extraction failed on page ${pageNumber}`, error);
         }
+        if (cancelled) return;
+        extracted.set(pageNumber, { page: pageNumber, paragraphs });
+        setPages(Array.from(extracted.values()).sort((left, right) => left.page - right.page));
+        setLoaded(extracted.size);
+        await yieldToBrowser();
       }
     })().catch(error => console.error(error));
 
@@ -546,6 +553,18 @@ function scrollPDFToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
   if (!pageElement) return;
   const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
   stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
+}
+
+function getPDFTextExtractionOrder(startPage: number, totalPages: number) {
+  const safeStart = Math.max(1, Math.min(totalPages, startPage));
+  const pages: number[] = [];
+  for (let page = safeStart; page <= totalPages; page += 1) pages.push(page);
+  for (let page = safeStart - 1; page >= 1; page -= 1) pages.push(page);
+  return pages;
+}
+
+function yieldToBrowser() {
+  return new Promise<void>(resolve => window.setTimeout(resolve, 0));
 }
 
 function getPDFTextScrollAnchor(stage: HTMLElement): PDFScrollAnchor {
