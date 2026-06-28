@@ -357,6 +357,7 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
     const stage = stageRef.current;
     const documentElement = stage.querySelector<HTMLElement>(".pdf-document") || stage;
     let knownWidth = Math.round(documentElement.clientWidth);
+    let knownHeight = Math.round(documentElement.getBoundingClientRect().height);
     setPageWidth(knownWidth);
 
     const finishPreserving = () => {
@@ -375,18 +376,30 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
       });
     };
 
-    const updateWidth = (width: number) => {
+    const updateLayout = (width: number, height: number) => {
       const next = Math.round(width);
-      if (!next || Math.abs(next - knownWidth) < 2) return;
-      knownWidth = next;
-      setPageWidth(next);
-      restorePosition();
+      const nextHeight = Math.round(height);
+      let changed = false;
+      if (next && Math.abs(next - knownWidth) >= 2) {
+        knownWidth = next;
+        setPageWidth(next);
+        changed = true;
+      }
+      if (nextHeight && Math.abs(nextHeight - knownHeight) >= 2) {
+        knownHeight = nextHeight;
+        changed = true;
+      }
+      if (changed) restorePosition();
     };
 
     const resizeObserver = typeof ResizeObserver === "undefined"
       ? null
-      : new ResizeObserver(entries => updateWidth(entries[0]?.contentRect.width || documentElement.clientWidth));
+      : new ResizeObserver(entries => updateLayout(
+        entries[0]?.contentRect.width || documentElement.clientWidth,
+        entries[0]?.contentRect.height || documentElement.getBoundingClientRect().height
+      ));
     resizeObserver?.observe(documentElement);
+    restorePosition();
 
     const handleViewportChange = () => restorePosition();
     window.addEventListener("resize", handleViewportChange);
