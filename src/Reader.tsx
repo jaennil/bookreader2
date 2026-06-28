@@ -26,6 +26,7 @@ type PDFLinkAnnotation = {
 };
 
 const PDF_READING_LINE_RATIO = .38;
+const PDF_ANCHOR_TOLERANCE = 2;
 const PDF_TEXT_LAYOUT_PRESERVE_MS = 120;
 const PDF_TEXT_BATCH_SIZE = 20;
 
@@ -619,7 +620,7 @@ function getPDFScrollAnchor(stage: HTMLElement): PDFScrollAnchor {
   const readingLine = stage.scrollTop + stage.clientHeight * PDF_READING_LINE_RATIO;
   let anchor: PDFScrollAnchor = { page: 1, offsetRatio: 0 };
   stage.querySelectorAll<HTMLElement>("[data-pdf-page]").forEach(element => {
-    if (element.offsetTop <= readingLine) {
+    if (element.offsetTop <= readingLine + PDF_ANCHOR_TOLERANCE) {
       const page = Number(element.dataset.pdfPage) || 1;
       const offsetRatio = Math.min(1, Math.max(0, (readingLine - element.offsetTop) / Math.max(1, element.clientHeight)));
       anchor = { page, offsetRatio };
@@ -680,7 +681,7 @@ function getPDFTextScrollAnchor(stage: HTMLElement): PDFScrollAnchor {
   const readingLine = stage.scrollTop + stage.clientHeight * PDF_READING_LINE_RATIO;
   let anchor: PDFScrollAnchor = { page: 1, offsetRatio: 0 };
   stage.querySelectorAll<HTMLElement>("[data-pdf-text-page]").forEach(element => {
-    if (element.offsetTop <= readingLine) {
+    if (element.offsetTop <= readingLine + PDF_ANCHOR_TOLERANCE) {
       const page = Number(element.dataset.pdfTextPage) || 1;
       const offsetRatio = Math.min(1, Math.max(0, (readingLine - element.offsetTop) / Math.max(1, element.clientHeight)));
       anchor = { page, offsetRatio };
