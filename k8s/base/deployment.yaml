@@ -17,7 +17,7 @@ spec:
         app: bookreader
     spec:
       nodeSelector:
-        kubernetes.io/hostname: jaennil-pc
+        kubernetes.io/hostname: raspberrypi
       securityContext:
         fsGroup: 10001
       imagePullSecrets:
@@ -76,4 +76,4 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: bookreader-data
+            claimName: bookreader-data-pi

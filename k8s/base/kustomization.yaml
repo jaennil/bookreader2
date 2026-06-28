@@ -4,5 +4,6 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - pvc.yaml
+  - pvc-pi.yaml
   - deployment.yaml
   - service.yaml
