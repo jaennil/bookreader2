@@ -473,14 +473,14 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .reader-tools .reader-tool-button { font-family: Georgia, serif; font-size: 15px; }
 
 .reader-stage { position: relative; min-height: 0; overflow: hidden; }
-.reader-scroll { width: 100%; height: 100%; overflow-y: auto; scroll-behavior: smooth; }
+.reader-scroll { width: 100%; height: 100%; overflow-y: auto; }
 .reader-article { width: min(690px, calc(100% - 44px)); margin: 0 auto; padding: 68px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.85; }
 .reader-article h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 2.05); line-height: 1.2; }
 .reader-article .chapter-author { margin-bottom: 54px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .reader-article p { margin-bottom: 1.35em; }
 .reader[data-theme="dark"] .reader-article { color: #d4d9d5; }
 .epub-stage { width: min(860px, 100%); height: 100%; margin: auto; }
-.pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; scroll-behavior: smooth; }
+.pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; }
 .pdf-document { display: grid; gap: 28px; width: min(900px, calc(100% - 40px)); margin: 0 auto; }
 .pdf-page { position: relative; display: grid; place-items: center; width: 100%; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .16); }
 .pdf-page::after { content: attr(data-pdf-page); position: absolute; right: 0; bottom: -19px; color: #888e89; font-size: 9px; }

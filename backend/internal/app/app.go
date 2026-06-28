@@ -23,14 +23,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
-	maxUploadSize   = 100 << 20
-	passwordRounds  = 120_000
-	sessionLifetime = 30 * 24 * time.Hour
-	stateFileName   = "state.json"
-	bookDirectory   = "books"
+	maxUploadSize       = 100 << 20
+	passwordRounds      = 120_000
+	sessionLifetime     = 30 * 24 * time.Hour
+	stateFileName       = "state.json"
+	bookDirectory       = "books"
+	pdfTextDirectory    = "pdf-text"
+	pdfTextCacheVersion = 2
 )
 
 var (
@@ -96,11 +100,12 @@ type diskState struct {
 }
 
 type App struct {
-	mu      sync.RWMutex
-	dataDir string
-	webDir  string
-	state   persistedState
-	mux     *http.ServeMux
+	mu        sync.RWMutex
+	pdfTextMu sync.Mutex
+	dataDir   string
+	webDir    string
+	state     persistedState
+	mux       *http.ServeMux
 }
 
 func New(dataDir, webDir string) (*App, error) {
@@ -109,6 +114,9 @@ func New(dataDir, webDir string) (*App, error) {
 	}
 	if err := os.MkdirAll(filepath.Join(dataDir, bookDirectory), 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, pdfTextDirectory), 0o750); err != nil {
+		return nil, fmt.Errorf("create pdf text cache directory: %w", err)
 	}
 
 	a := &App{
@@ -427,6 +435,11 @@ func (a *App) deleteBook(w http.ResponseWriter, r *http.Request) {
 	if err := os.Remove(filepath.Join(a.dataDir, bookDirectory, book.StoredName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("delete book file: %v", err)
 	}
+	a.pdfTextMu.Lock()
+	if err := os.Remove(a.pdfTextCachePath(book.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("delete pdf text cache: %v", err)
+	}
+	a.pdfTextMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -456,6 +469,11 @@ type pdfTextPage struct {
 	Paragraphs []string `json:"paragraphs"`
 }
 
+type pdfTextCache struct {
+	Version int              `json:"version"`
+	Pages   map[int][]string `json:"pages"`
+}
+
 func (a *App) pdfText(w http.ResponseWriter, r *http.Request) {
 	userID, _, ok := a.authenticate(r)
 	if !ok {
@@ -474,55 +492,129 @@ func (a *App) pdfText(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalPages := max(1, queryInt(r, "pages", book.Pages))
+	filePath := filepath.Join(a.dataDir, bookDirectory, book.StoredName)
+	totalPages := book.Pages
+	if totalPages <= 0 {
+		var err error
+		totalPages, err = pdfPageCount(r.Context(), filePath)
+		if err != nil {
+			log.Printf("pdf page count: %v", err)
+			totalPages = max(1, queryInt(r, "pages", 1))
+		} else {
+			a.rememberPDFPageCount(book.ID, totalPages)
+		}
+	}
 	from := queryInt(r, "from", queryInt(r, "page", max(1, book.Page)))
 	to := queryInt(r, "to", from)
 	from = max(1, min(totalPages, from))
 	to = max(from, min(totalPages, to))
-	if to-from > 9 {
-		to = from + 9
+	if to-from > 19 {
+		to = from + 19
 	}
 
-	filePath := filepath.Join(a.dataDir, bookDirectory, book.StoredName)
-	pages := make([]pdfTextPage, 0, to-from+1)
-	for page := from; page <= to; page++ {
-		paragraphs, err := extractPDFTextPage(r.Context(), filePath, page)
-		if err != nil {
-			log.Printf("pdf text fallback page %d: %v", page, err)
-			paragraphs = nil
-		}
-		pages = append(pages, pdfTextPage{Page: page, Paragraphs: paragraphs})
+	pages, err := a.cachedPDFTextPages(r.Context(), book.ID, filePath, from, to)
+	if err != nil {
+		log.Printf("pdf text pages %d-%d: %v", from, to, err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pages": pages})
+	w.Header().Set("Cache-Control", "private, no-cache")
+	writeJSON(w, http.StatusOK, map[string]any{"pages": pages, "totalPages": totalPages})
 }
 
-func extractPDFTextPage(ctx context.Context, filePath string, page int) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+func (a *App) cachedPDFTextPages(ctx context.Context, bookID, filePath string, from, to int) ([]pdfTextPage, error) {
+	a.pdfTextMu.Lock()
+	defer a.pdfTextMu.Unlock()
+
+	cache, err := a.loadPDFTextCache(bookID)
+	if err != nil {
+		log.Printf("load pdf text cache: %v", err)
+		cache = newPDFTextCache()
+	}
+	missingFrom, missingTo := 0, 0
+	for page := from; page <= to; page++ {
+		if _, exists := cache.Pages[page]; exists {
+			continue
+		}
+		if missingFrom == 0 {
+			missingFrom = page
+		}
+		missingTo = page
+	}
+
+	var extractionErr error
+	if missingFrom > 0 {
+		extracted, err := extractPDFTextPages(ctx, filePath, missingFrom, missingTo)
+		if err != nil {
+			extractionErr = err
+		} else {
+			for _, page := range extracted {
+				cache.Pages[page.Page] = page.Paragraphs
+			}
+			if err := a.savePDFTextCache(bookID, cache); err != nil {
+				extractionErr = fmt.Errorf("save cache: %w", err)
+			}
+		}
+	}
+
+	pages := make([]pdfTextPage, 0, to-from+1)
+	for page := from; page <= to; page++ {
+		pages = append(pages, pdfTextPage{Page: page, Paragraphs: cache.Pages[page]})
+	}
+	return pages, extractionErr
+}
+
+func extractPDFTextPages(ctx context.Context, filePath string, from, to int) ([]pdfTextPage, error) {
+	timeout := 8*time.Second + time.Duration(to-from)*time.Second
+	ctx, cancel := context.WithTimeout(ctx, min(30*time.Second, timeout))
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-layout", filePath, "-").Output()
+	output, err := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", "-f", strconv.Itoa(from), "-l", strconv.Itoa(to), "-layout", filePath, "-").Output()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if err != nil {
 		return nil, err
 	}
-	return splitExtractedPDFText(string(output)), nil
+	text := strings.ReplaceAll(string(output), "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	rawPages := strings.Split(text, "\f")
+	pages := make([]pdfTextPage, 0, to-from+1)
+	for page := from; page <= to; page++ {
+		index := page - from
+		pageText := ""
+		if index < len(rawPages) {
+			pageText = rawPages[index]
+		}
+		pages = append(pages, pdfTextPage{Page: page, Paragraphs: splitExtractedPDFText(pageText)})
+	}
+	return pages, nil
 }
 
 func splitExtractedPDFText(text string) []string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	text = strings.ReplaceAll(text, "\f", "\n")
-	blocks := strings.Split(text, "\n\n")
+	text = strings.ReplaceAll(text, "\u00a0", " ")
+	text = strings.ReplaceAll(text, "\u00ad", "")
+	lines := strings.Split(text, "\n")
+	stripPDFPageNumber(lines)
+	blocks := make([][]string, 0)
+	block := make([]string, 0)
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			if len(block) > 0 {
+				blocks = append(blocks, block)
+				block = nil
+			}
+			continue
+		}
+		block = append(block, line)
+	}
+	if len(block) > 0 {
+		blocks = append(blocks, block)
+	}
 	paragraphs := make([]string, 0, len(blocks))
 	for _, block := range blocks {
-		lines := strings.Split(block, "\n")
 		paragraph := ""
-		for _, line := range lines {
+		for _, line := range block {
 			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
 			paragraph = mergeExtractedPDFLine(paragraph, line)
 		}
 		if paragraph != "" {
@@ -532,12 +624,40 @@ func splitExtractedPDFText(text string) []string {
 	return paragraphs
 }
 
+func stripPDFPageNumber(lines []string) {
+	first, last := -1, -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if first < 0 {
+			first = index
+		}
+		last = index
+	}
+	if first >= 0 && isPDFPageNumber(lines[first]) {
+		lines[first] = ""
+	}
+	if last >= 0 && last != first && isPDFPageNumber(lines[last]) {
+		lines[last] = ""
+	}
+}
+
+func isPDFPageNumber(line string) bool {
+	line = strings.TrimSpace(strings.Trim(line, "-–—"))
+	if line == "" {
+		return false
+	}
+	_, err := strconv.Atoi(strings.TrimSpace(line))
+	return err == nil
+}
+
 func mergeExtractedPDFLine(paragraph, line string) string {
 	if paragraph == "" {
 		return strings.Join(strings.Fields(line), " ")
 	}
 	line = strings.Join(strings.Fields(line), " ")
-	if strings.HasSuffix(paragraph, "-") {
+	if strings.HasSuffix(paragraph, "-") && startsWithLowercase(line) {
 		return strings.TrimSuffix(paragraph, "-") + line
 	}
 	if strings.HasSuffix(paragraph, "«") || strings.HasSuffix(paragraph, "“") || strings.HasSuffix(paragraph, "(") {
@@ -547,6 +667,97 @@ func mergeExtractedPDFLine(paragraph, line string) string {
 		return paragraph + line
 	}
 	return paragraph + " " + line
+}
+
+func startsWithLowercase(value string) bool {
+	r, _ := utf8.DecodeRuneInString(strings.TrimSpace(value))
+	return r != utf8.RuneError && unicode.IsLower(r)
+}
+
+func newPDFTextCache() pdfTextCache {
+	return pdfTextCache{Version: pdfTextCacheVersion, Pages: make(map[int][]string)}
+}
+
+func (a *App) pdfTextCachePath(bookID string) string {
+	return filepath.Join(a.dataDir, pdfTextDirectory, bookID+".json")
+}
+
+func (a *App) loadPDFTextCache(bookID string) (pdfTextCache, error) {
+	data, err := os.ReadFile(a.pdfTextCachePath(bookID))
+	if errors.Is(err, os.ErrNotExist) {
+		return newPDFTextCache(), nil
+	}
+	if err != nil {
+		return pdfTextCache{}, err
+	}
+	var cache pdfTextCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return pdfTextCache{}, err
+	}
+	if cache.Version != pdfTextCacheVersion || cache.Pages == nil {
+		return newPDFTextCache(), nil
+	}
+	return cache, nil
+}
+
+func (a *App) savePDFTextCache(bookID string, cache pdfTextCache) error {
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Join(a.dataDir, pdfTextDirectory)
+	temporary, err := os.CreateTemp(directory, ".pdf-text-*")
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	defer os.Remove(name)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, a.pdfTextCachePath(bookID))
+}
+
+func pdfPageCount(ctx context.Context, filePath string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "pdfinfo", filePath).Output()
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		name, value, found := strings.Cut(line, ":")
+		if !found || !strings.EqualFold(strings.TrimSpace(name), "Pages") {
+			continue
+		}
+		pages, err := strconv.Atoi(strings.TrimSpace(value))
+		if err == nil && pages > 0 {
+			return pages, nil
+		}
+	}
+	return 0, errors.New("pdf page count not found")
+}
+
+func (a *App) rememberPDFPageCount(bookID string, pages int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	book, exists := a.state.Books[bookID]
+	if !exists || book.Pages == pages {
+		return
+	}
+	book.Pages = pages
+	a.state.Books[bookID] = book
+	if err := a.persistLocked(); err != nil {
+		log.Printf("persist pdf page count: %v", err)
+	}
 }
 
 func queryInt(r *http.Request, name string, fallback int) int {

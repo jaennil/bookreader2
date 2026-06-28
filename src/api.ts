@@ -87,9 +87,10 @@ export const api = {
     return request<void>(`/api/books/${id}`, { method: "DELETE" });
   },
 
-  pdfTextPage(id: string, page: number, pages: number) {
-    const query = new URLSearchParams({ page: String(page), pages: String(pages) });
-    return request<{ pages: PDFTextPagePayload[] }>(`/api/books/${id}/pdf-text?${query}`);
+  pdfTextPages(id: string, from: number, to: number, pages?: number) {
+    const query = new URLSearchParams({ from: String(from), to: String(to) });
+    if (pages) query.set("pages", String(pages));
+    return request<{ pages: PDFTextPagePayload[]; totalPages: number }>(`/api/books/${id}/pdf-text?${query}`);
   },
 
   async bookBlob(id: string, signal?: AbortSignal): Promise<Blob> {

@@ -11,6 +11,39 @@ import (
 	"testing"
 )
 
+func TestSplitExtractedPDFText(t *testing.T) {
+	text := "  12  \n\nЗаголовок\n\nПервая длин-\nная строка.\n\n1\nПункт списка\n\n— 13 —\n"
+	want := []string{"Заголовок", "Первая длинная строка.", "1 Пункт списка"}
+	got := splitExtractedPDFText(text)
+	if len(got) != len(want) {
+		t.Fatalf("paragraphs = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("paragraph %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
+func TestPDFTextCacheRoundTrip(t *testing.T) {
+	handler, err := New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := newPDFTextCache()
+	cache.Pages[7] = []string{"Сохранённый текст"}
+	if err := handler.savePDFTextCache("book-id", cache); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := handler.loadPDFTextCache("book-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Pages[7]) != 1 || loaded.Pages[7][0] != "Сохранённый текст" {
+		t.Fatalf("cache was not restored: %#v", loaded)
+	}
+}
+
 func TestAccountBookAndProgressFlow(t *testing.T) {
 	handler, err := New(t.TempDir(), "")
 	if err != nil {

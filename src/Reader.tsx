@@ -14,7 +14,6 @@ type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
 type PDFScrollAnchor = { page: number; offsetRatio: number };
 type PDFAnchorCapture = () => PDFScrollAnchor;
 type PDFTextPage = { page: number; paragraphs: string[] };
-type PDFTextItem = { text: string; x: number; y: number; width: number; height: number };
 type PDFDestinationTarget = { page: number; offsetRatio: number };
 type PDFLinkAnnotation = {
   subtype?: string;
@@ -27,7 +26,8 @@ type PDFLinkAnnotation = {
 };
 
 const PDF_READING_LINE_RATIO = .38;
-const PDF_TEXT_LAYOUT_PRESERVE_MS = 1100;
+const PDF_TEXT_LAYOUT_PRESERVE_MS = 120;
+const PDF_TEXT_BATCH_SIZE = 20;
 
 interface ReaderProps {
   book: Book;
@@ -55,19 +55,23 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     return window.matchMedia("(max-width: 720px)").matches ? "text" : "page";
   });
   const [liveBook, setLiveBook] = useState(book);
-  const pdfAnchor = useRef<PDFScrollAnchor>({ page: book.page || 1, offsetRatio: 0 });
+  const pdfAnchor = useRef<PDFScrollAnchor>(getBookPDFAnchor(book));
   const capturePDFAnchor = useRef<PDFAnchorCapture>(() => pdfAnchor.current);
   const navigation = useRef<Navigation>({ previous: () => undefined, next: () => undefined });
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
 
   useEffect(() => {
-    let disposed = false;
-    const controller = new AbortController();
     setLiveBook(book);
-    pdfAnchor.current = { page: book.page || 1, offsetRatio: 0 };
+    pdfAnchor.current = getBookPDFAnchor(book);
     setBlob(null);
     setError("");
     registerNavigation({ previous: () => undefined, next: () => undefined });
+  }, [book.id]);
+
+  useEffect(() => {
+    if (blob || (book.format === "PDF" && pdfMode === "text")) return;
+    let disposed = false;
+    const controller = new AbortController();
 
     const load = async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -92,7 +96,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
       disposed = true;
       controller.abort();
     };
-  }, [book.id]);
+  }, [blob, book.format, book.id, pdfMode]);
 
   const update = useCallback((value: BookUpdate) => {
     setLiveBook(current => ({ ...current, ...value, updatedAt: new Date().toISOString() }));
@@ -129,6 +133,8 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     localStorage.setItem("polka-pdf-mode", next);
   }
 
+  const needsBookFile = liveBook.format !== "PDF" || pdfMode === "page";
+
   return (
     <section className="reader" data-theme={theme} style={{ "--reader-size": `${fontSize}px` } as CSSProperties}>
       <header className="reader-toolbar">
@@ -141,9 +147,10 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
         </div>
       </header>
       <main className="reader-stage">
-        {!blob && !error && <ReaderMessage title="Открываем книгу…"/>}
-        {error && <ReaderMessage title="Файл недоступен" text={error}/>}
-        {blob && liveBook.format === "PDF" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor} onAnchorCaptureReady={registerPDFAnchorCapture}/>}
+        {liveBook.format === "PDF" && pdfMode === "text" && <PDFTextFlow book={liveBook} fontSize={fontSize} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor} onAnchorCaptureReady={registerPDFAnchorCapture} onUpdate={update} registerNavigation={registerNavigation}/>}
+        {needsBookFile && !blob && !error && <ReaderMessage title="Открываем книгу…"/>}
+        {needsBookFile && error && <ReaderMessage title="Файл недоступен" text={error}/>}
+        {blob && liveBook.format === "PDF" && pdfMode === "page" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor} onAnchorCaptureReady={registerPDFAnchorCapture}/>}
         {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
         {blob && liveBook.format === "FB2" && <FB2View blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
       </main>
@@ -414,7 +421,7 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
   if (error) return <ReaderMessage title="PDF не удалось открыть" text={error}/>;
   if (!document) return <ReaderMessage title="Разбираем PDF…"/>;
   if (mode === "text") {
-    return <PDFTextFlow document={document} book={book} fontSize={fontSize} initialAnchor={initialAnchor} onAnchorChange={onAnchorChange} onAnchorCaptureReady={onAnchorCaptureReady} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
+    return <PDFTextFlow book={book} fontSize={fontSize} initialAnchor={initialAnchor} onAnchorChange={onAnchorChange} onAnchorCaptureReady={onAnchorCaptureReady} onUpdate={onUpdate} registerNavigation={registerNavigation}/>;
   }
   return (
     <div className="pdf-stage" ref={stageRef} onScroll={handleScroll}>
@@ -428,7 +435,7 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
   );
 }
 
-function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, onAnchorCaptureReady, onUpdate, registerNavigation }: { document: PDFDocument; book: Book; fontSize: number; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onAnchorCaptureReady: (capture: PDFAnchorCapture | null) => void; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
+function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCaptureReady, onUpdate, registerNavigation }: { book: Book; fontSize: number; initialAnchor: PDFScrollAnchor; onAnchorChange: (anchor: PDFScrollAnchor) => void; onAnchorCaptureReady: (capture: PDFAnchorCapture | null) => void; onUpdate: (update: BookUpdate) => void; registerNavigation: (navigation: Navigation) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTimer = useRef<number | undefined>(undefined);
   const resizeTimer = useRef<number | undefined>(undefined);
@@ -438,6 +445,8 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   const positionRef = useRef<PDFScrollAnchor>(initialAnchor);
   const [pages, setPages] = useState<PDFTextPage[]>([]);
   const [loaded, setLoaded] = useState(0);
+  const [totalPages, setTotalPages] = useState(Math.max(1, book.pages || 0, initialAnchor.page));
+  const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(book.page || 1);
   const hasAnyText = pages.some(page => page.paragraphs.length > 0);
   const restorePosition = useCallback(() => {
@@ -456,33 +465,43 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
     let cancelled = false;
     setPages([]);
     setLoaded(0);
+    setLoadError("");
     restoredRef.current = false;
-    const anchor = normalizePDFAnchor(initialAnchor, document.numPages);
+    const knownTotal = Math.max(1, book.pages || 0, initialAnchor.page);
+    const anchor = normalizePDFAnchor(initialAnchor, knownTotal);
     const startPage = anchor.page;
+    setTotalPages(knownTotal);
     positionRef.current = anchor;
     onAnchorChange(anchor);
     setCurrentPage(startPage);
-    onUpdate({ pages: document.numPages });
 
     void (async () => {
       const extracted = new Map<number, PDFTextPage>();
-      for (const pageNumber of getPDFTextExtractionOrder(startPage, document.numPages)) {
-        let paragraphs: string[] = [];
+      const loadRange = async (from: number, to: number, pagesCount: number) => {
         try {
-          const pdfPage = await document.getPage(pageNumber);
+          const response = await api.pdfTextPages(book.id, from, to, pagesCount);
           if (cancelled) return;
-          paragraphs = await extractPDFTextParagraphs(pdfPage);
-          pdfPage.cleanup();
+          response.pages.forEach(page => extracted.set(page.page, page));
+          setPages(Array.from(extracted.values()).sort((left, right) => left.page - right.page));
+          setLoaded(extracted.size);
+          return response.totalPages;
         } catch (error) {
-          console.error(`PDF text extraction failed on page ${pageNumber}`, error);
+          console.error(`PDF text loading failed for pages ${from}-${to}`, error);
+          if (from === startPage && to === startPage) {
+            setLoadError("Не удалось извлечь текст. Переключитесь в режим PDF и попробуйте ещё раз.");
+          }
         }
-        if (!paragraphs.length) {
-          paragraphs = await extractPDFTextParagraphsFromServer(book.id, pageNumber, document.numPages);
-        }
+        return pagesCount;
+      };
+
+      const actualTotal = Math.max(startPage, await loadRange(startPage, startPage, knownTotal) || knownTotal);
+      if (cancelled) return;
+      setTotalPages(actualTotal);
+      if (book.pages !== actualTotal) onUpdate({ pages: actualTotal });
+
+      for (const range of getPDFTextExtractionRanges(startPage, actualTotal)) {
+        await loadRange(range.from, range.to, actualTotal);
         if (cancelled) return;
-        extracted.set(pageNumber, { page: pageNumber, paragraphs });
-        setPages(Array.from(extracted.values()).sort((left, right) => left.page - right.page));
-        setLoaded(extracted.size);
         await yieldToBrowser();
       }
     })().catch(error => console.error(error));
@@ -493,7 +512,7 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
       window.clearTimeout(resizeTimer.current);
       window.clearTimeout(preserveTimer.current);
     };
-  }, [book.id, document]);
+  }, [book.id]);
 
   useEffect(() => {
     const scroll = scrollRef.current;
@@ -507,13 +526,13 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || restoredRef.current || pages.length === 0) return;
-    const targetAnchor = normalizePDFAnchor(initialAnchor, document.numPages);
+    const targetAnchor = normalizePDFAnchor(initialAnchor, totalPages);
     if (!pages.some(page => page.page === targetAnchor.page)) return;
     restoredRef.current = true;
     positionRef.current = targetAnchor;
     onAnchorChange(targetAnchor);
     window.requestAnimationFrame(() => scrollPDFTextToAnchor(scroll, targetAnchor));
-  }, [book.page, document.numPages, pages]);
+  }, [book.page, pages, totalPages]);
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
@@ -546,11 +565,11 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
   const rememberAnchor = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return positionRef.current;
-    const anchor = normalizePDFAnchor(getPDFTextScrollAnchor(scroll), document.numPages);
+    const anchor = normalizePDFAnchor(getPDFTextScrollAnchor(scroll), totalPages);
     positionRef.current = anchor;
     onAnchorChange(anchor);
     return anchor;
-  }, [document.numPages, onAnchorChange]);
+  }, [onAnchorChange, totalPages]);
 
   useEffect(() => {
     onAnchorCaptureReady(() => rememberAnchor());
@@ -567,7 +586,7 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
       if (anchor.page !== currentPage) {
         setCurrentPage(anchor.page);
       }
-      onUpdate(getPDFAnchorUpdate(anchor, document.numPages));
+      onUpdate(getPDFAnchorUpdate(anchor, totalPages));
     }, 120);
   }
 
@@ -588,8 +607,9 @@ function PDFTextFlow({ document, book, fontSize, initialAnchor, onAnchorChange, 
               : <p className="pdf-empty-page">На этой странице не найден текстовый слой.</p>}
           </section>
         ))}
-        {loaded < document.numPages && <div className="pdf-text-loading">Извлекаем текст: {loaded} / {document.numPages}</div>}
-        {loaded === document.numPages && !hasAnyText && <div className="pdf-text-loading">В этом PDF не найден текстовый слой. Похоже, это скан — используйте оригинальный PDF-режим.</div>}
+        {loadError && <div className="pdf-text-loading">{loadError}</div>}
+        {!loadError && loaded < totalPages && <div className="pdf-text-loading">Подготавливаем текст: {loaded} / {totalPages}</div>}
+        {loaded === totalPages && !hasAnyText && <div className="pdf-text-loading">В этом PDF не найден текстовый слой. Похоже, это скан — используйте оригинальный PDF-режим.</div>}
       </article>
     </div>
   );
@@ -633,12 +653,23 @@ function getPDFAnchorUpdate(anchor: PDFScrollAnchor, totalPages?: number): BookU
   };
 }
 
-function getPDFTextExtractionOrder(startPage: number, totalPages: number) {
+function getBookPDFAnchor(book: Book): PDFScrollAnchor {
+  const page = Math.max(1, book.page || 1);
+  if (!book.pages) return { page, offsetRatio: 0 };
+  const absolutePosition = book.progress / 100 * book.pages;
+  return normalizePDFAnchor({ page, offsetRatio: absolutePosition - (page - 1) }, book.pages);
+}
+
+function getPDFTextExtractionRanges(startPage: number, totalPages: number) {
   const safeStart = Math.max(1, Math.min(totalPages, startPage));
-  const pages: number[] = [];
-  for (let page = safeStart; page <= totalPages; page += 1) pages.push(page);
-  for (let page = safeStart - 1; page >= 1; page -= 1) pages.push(page);
-  return pages;
+  const ranges: { from: number; to: number }[] = [];
+  for (let from = safeStart + 1; from <= totalPages; from += PDF_TEXT_BATCH_SIZE) {
+    ranges.push({ from, to: Math.min(totalPages, from + PDF_TEXT_BATCH_SIZE - 1) });
+  }
+  for (let to = safeStart - 1; to >= 1; to -= PDF_TEXT_BATCH_SIZE) {
+    ranges.push({ from: Math.max(1, to - PDF_TEXT_BATCH_SIZE + 1), to });
+  }
+  return ranges;
 }
 
 function yieldToBrowser() {
@@ -663,126 +694,6 @@ function scrollPDFTextToAnchor(stage: HTMLElement, anchor: PDFScrollAnchor) {
   if (!pageElement) return;
   const pageOffset = pageElement.clientHeight * Math.min(1, Math.max(0, anchor.offsetRatio));
   stage.scrollTop = Math.max(0, pageElement.offsetTop + pageOffset - stage.clientHeight * PDF_READING_LINE_RATIO);
-}
-
-async function extractPDFTextParagraphs(page: PDFPageProxy) {
-  const content = await page.getTextContent();
-  const rawItems = (content.items as unknown[])
-    .map(item => normalizePDFTextItem(item))
-    .filter((item): item is PDFTextItem => Boolean(item?.text.trim()));
-  if (!rawItems.length) return [];
-
-  const sorted = rawItems.sort((left, right) => Math.abs(right.y - left.y) > 3 ? right.y - left.y : left.x - right.x);
-  const lines: { items: PDFTextItem[]; y: number; height: number }[] = [];
-  for (const item of sorted) {
-    const current = lines[lines.length - 1];
-    if (!current || Math.abs(current.y - item.y) > Math.max(2.5, item.height * .28)) {
-      lines.push({ items: [item], y: item.y, height: item.height });
-      continue;
-    }
-    current.items.push(item);
-    current.y = (current.y + item.y) / 2;
-    current.height = Math.max(current.height, item.height);
-  }
-
-  const cleanLines = lines
-    .map(line => ({ text: renderPDFTextLine(line), y: line.y }))
-    .filter(line => line.text.length > 0);
-  if (!cleanLines.length) return [];
-
-  const gaps = cleanLines.slice(1)
-    .map((line, index) => Math.abs(cleanLines[index].y - line.y))
-    .filter(gap => gap > 0);
-  const medianGap = median(gaps) || 12;
-  const paragraphs: string[] = [];
-  let paragraph = "";
-
-  cleanLines.forEach((line, index) => {
-    const previous = cleanLines[index - 1];
-    const gap = previous ? Math.abs(previous.y - line.y) : 0;
-    const startsNewParagraph = Boolean(previous && gap > medianGap * 1.55);
-    if (!paragraph || startsNewParagraph) {
-      if (paragraph) paragraphs.push(paragraph);
-      paragraph = line.text;
-      return;
-    }
-    paragraph = mergePDFTextLine(paragraph, line.text);
-  });
-  if (paragraph) paragraphs.push(paragraph);
-
-  return paragraphs.filter(text => text.trim().length > 0);
-}
-
-async function extractPDFTextParagraphsFromServer(bookId: string, page: number, pages: number) {
-  try {
-    const response = await api.pdfTextPage(bookId, page, pages);
-    return response.pages.find(item => item.page === page)?.paragraphs || [];
-  } catch (error) {
-    console.error(`Server PDF text fallback failed on page ${page}`, error);
-    return [];
-  }
-}
-
-function normalizePDFTextItem(item: unknown) {
-  if (!item || typeof item !== "object" || !("str" in item)) return null;
-  const value = item as { str?: unknown; transform?: unknown; width?: unknown; height?: unknown };
-  if (typeof value.str !== "string") return null;
-  const transform = Array.isArray(value.transform) ? value.transform : [];
-  const x = typeof transform[4] === "number" ? transform[4] : 0;
-  const y = typeof transform[5] === "number" ? transform[5] : 0;
-  const height = typeof value.height === "number" && Number.isFinite(value.height) ? value.height : 10;
-  const width = typeof value.width === "number" && Number.isFinite(value.width) ? value.width : Math.max(0, value.str.length * height * .45);
-  return { text: value.str, x, y, width, height };
-}
-
-function renderPDFTextLine(line: { items: PDFTextItem[]; height: number }) {
-  const items = [...line.items].sort((left, right) => left.x - right.x);
-  const spaceGap = Math.max(1.8, line.height * .22);
-  let result = "";
-  let previous: PDFTextItem | null = null;
-  let pendingSpace = false;
-
-  for (const item of items) {
-    const normalized = item.text.replace(/\s+/g, " ");
-    const text = normalized.trim();
-    if (!text) {
-      pendingSpace = pendingSpace || normalized.length > 0;
-      previous = item;
-      continue;
-    }
-    const gap = previous ? item.x - (previous.x + previous.width) : 0;
-    const needsSpace = Boolean(previous && (pendingSpace || /^\s/.test(normalized) || gap > spaceGap));
-    result = appendPDFTextRun(result, text, needsSpace);
-    pendingSpace = /\s$/.test(normalized);
-    previous = item;
-  }
-
-  return result.replace(/\s+/g, " ").trim();
-}
-
-function appendPDFText(left: string, right: string) {
-  return appendPDFTextRun(left, right, true);
-}
-
-function appendPDFTextRun(left: string, right: string, insertSpace: boolean) {
-  const text = right.trim();
-  if (!text) return left;
-  if (!left) return text;
-  if (/^[,.;:!?…%)\]}»”]/.test(text)) return left + text;
-  if (/[(\[{«“]$/.test(left)) return left + text;
-  if (!insertSpace) return left + text;
-  return `${left} ${text}`;
-}
-
-function mergePDFTextLine(paragraph: string, line: string) {
-  if (paragraph.endsWith("-")) return paragraph.slice(0, -1) + line;
-  return appendPDFText(paragraph, line);
-}
-
-function median(values: number[]) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)];
 }
 
 function PDFPage({ document, page, active, ratio, pageWidth, onInternalLink }: { document: PDFDocument; page: number; active: boolean; ratio: string; pageWidth: number; onInternalLink: (page: number, offsetRatio?: number) => void }) {
