@@ -471,15 +471,16 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .reader-title span { color: #858b86; font-size: 8px; }
 .reader-tools { display: flex; justify-content: flex-end; gap: 2px; }
 .reader-tools .reader-tool-button { font-family: Georgia, serif; font-size: 15px; }
+.reader-width-button { cursor: ew-resize; touch-action: none; user-select: none; }
 
 .reader-stage { position: relative; min-height: 0; overflow: hidden; }
 .reader-scroll { width: 100%; height: 100%; overflow-y: auto; }
-.reader-article { width: min(690px, calc(100% - 44px)); margin: 0 auto; padding: 68px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.85; }
+.reader-article { width: min(var(--reader-width, 760px), calc(100% - 44px)); margin: 0 auto; padding: 68px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.85; }
 .reader-article h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 2.05); line-height: 1.2; }
 .reader-article .chapter-author { margin-bottom: 54px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
-.reader-article p { margin-bottom: 1.35em; }
+.reader-article p { margin-bottom: 1.35em; text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
 .reader[data-theme="dark"] .reader-article { color: #d4d9d5; }
-.epub-stage { width: min(860px, 100%); height: 100%; margin: auto; }
+.epub-stage { width: min(calc(var(--reader-width, 760px) + 100px), 100%); height: 100%; margin: auto; }
 .pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; }
 .pdf-document { display: grid; gap: 28px; width: min(900px, calc(100% - 40px)); margin: 0 auto; }
 .pdf-page { position: relative; display: grid; place-items: center; width: 100%; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .16); }
@@ -496,13 +497,13 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-link { position: absolute; display: block; border-radius: 2px; cursor: pointer; pointer-events: auto; }
 .pdf-link:hover { outline: 2px solid rgba(40, 88, 76, .35); background: rgba(223, 241, 91, .22); }
 .pdf-text-flow-stage { scroll-padding-top: 28px; }
-.pdf-text-flow { width: min(760px, calc(100% - 44px)); margin: 0 auto; padding: 54px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.78; }
+.pdf-text-flow { width: min(var(--reader-width, 760px), calc(100% - 44px)); margin: 0 auto; padding: 54px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.78; }
 .pdf-text-flow-head { margin-bottom: 34px; }
 .pdf-text-flow-head h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 1.8); line-height: 1.18; }
 .pdf-text-flow-head > p:last-child { max-width: 620px; color: #707871; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 11px; line-height: 1.7; }
 .pdf-text-flow .chapter-author { margin-bottom: 20px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
-.pdf-text-flow-page p { margin-bottom: 1.22em; }
+.pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
 .pdf-text-page-label, .pdf-text-loading { color: #8a8f8a; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
 .pdf-text-page-label { margin-bottom: 20px; }
 .pdf-empty-page, .pdf-text-loading { color: #7a807b; }
@@ -593,6 +594,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
   .reader { grid-template-rows: 58px 1fr 55px; }
   .reader-toolbar { grid-template-columns: auto 1fr auto; padding: 0 9px; }
   .reader-tool-button span { display: none; }
+  .reader-width-button { display: none; }
   .reader-title strong { max-width: 180px; }
   .reader-article { width: calc(100% - 34px); padding-top: 42px; line-height: 1.72; }
   .reader-article h1 { font-size: 28px; }

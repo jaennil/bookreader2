@@ -29,6 +29,9 @@ const PDF_READING_LINE_RATIO = .38;
 const PDF_ANCHOR_TOLERANCE = 2;
 const PDF_TEXT_LAYOUT_PRESERVE_MS = 120;
 const PDF_TEXT_BATCH_SIZE = 20;
+const READER_WIDTH_MIN = 520;
+const READER_WIDTH_MAX = 1100;
+const READER_WIDTH_PRESETS = [620, 760, 920, 1080];
 
 interface ReaderProps {
   book: Book;
@@ -50,6 +53,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("polka-reader-theme") as Theme) || "paper");
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem("polka-reader-size")) || 19);
+  const [textWidth, setTextWidth] = useState(() => clampReaderWidth(Number(localStorage.getItem("polka-reader-width")) || 760));
   const [pdfMode, setPdfMode] = useState<PDFMode>(() => {
     const saved = localStorage.getItem("polka-pdf-mode") as PDFMode | null;
     if (saved === "page" || saved === "text") return saved;
@@ -58,6 +62,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   const [liveBook, setLiveBook] = useState(book);
   const pdfAnchor = useRef<PDFScrollAnchor>(getBookPDFAnchor(book));
   const capturePDFAnchor = useRef<PDFAnchorCapture>(() => pdfAnchor.current);
+  const widthDrag = useRef<{ pointerID: number; startX: number; startWidth: number } | null>(null);
   const navigation = useRef<Navigation>({ previous: () => undefined, next: () => undefined });
   const registerNavigation = useCallback((value: Navigation) => { navigation.current = value; }, []);
 
@@ -125,6 +130,38 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     localStorage.setItem("polka-reader-size", String(next));
   }
 
+  function cycleTextWidth() {
+    const next = READER_WIDTH_PRESETS.find(width => width > textWidth + 30) || READER_WIDTH_PRESETS[0];
+    setTextWidth(next);
+    localStorage.setItem("polka-reader-width", String(next));
+  }
+
+  function startTextWidthDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    widthDrag.current = { pointerID: event.pointerId, startX: event.clientX, startWidth: textWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function dragTextWidth(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = widthDrag.current;
+    if (!drag || drag.pointerID !== event.pointerId) return;
+    setTextWidth(clampReaderWidth(drag.startWidth + (event.clientX - drag.startX) * 2));
+  }
+
+  function finishTextWidthDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    const drag = widthDrag.current;
+    if (!drag || drag.pointerID !== event.pointerId) return;
+    const moved = Math.abs(event.clientX - drag.startX) >= 3;
+    const next = clampReaderWidth(drag.startWidth + (event.clientX - drag.startX) * 2);
+    widthDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (moved) {
+      setTextWidth(next);
+      localStorage.setItem("polka-reader-width", String(next));
+    } else {
+      cycleTextWidth();
+    }
+  }
+
   function togglePDFMode() {
     const next = pdfMode === "text" ? "page" : "text";
     const anchor = normalizePDFAnchor(capturePDFAnchor.current(), liveBook.pages);
@@ -137,13 +174,14 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
   const needsBookFile = liveBook.format !== "PDF" || pdfMode === "page";
 
   return (
-    <section className="reader" data-theme={theme} style={{ "--reader-size": `${fontSize}px` } as CSSProperties}>
+    <section className="reader" data-theme={theme} style={{ "--reader-size": `${fontSize}px`, "--reader-width": `${textWidth}px` } as CSSProperties}>
       <header className="reader-toolbar">
         <button className="reader-tool-button" onClick={onClose}><BackIcon/><span>К библиотеке</span></button>
         <div className="reader-title"><strong>{liveBook.title}</strong><span>{liveBook.author}</span></div>
         <div className="reader-tools">
           <button className="reader-tool-button" title="Сменить фон" onClick={cycleTheme}>◐</button>
           {liveBook.format === "PDF" && <button className="reader-tool-button reader-mode-button" title={pdfMode === "text" ? "Показать оригинал PDF" : "Читать PDF как текст"} onClick={togglePDFMode}>{pdfMode === "text" ? "PDF" : "Текст"}</button>}
+          {(liveBook.format !== "PDF" || pdfMode === "text") && <button className="reader-tool-button reader-width-button" title={`Ширина текста: ${textWidth}px. Нажмите или перетащите`} aria-label={`Ширина текста ${textWidth} пикселей`} onPointerDown={startTextWidthDrag} onPointerMove={dragTextWidth} onPointerUp={finishTextWidthDrag} onPointerCancel={() => { widthDrag.current = null; }} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); cycleTextWidth(); } }}>↔</button>}
           {(liveBook.format !== "PDF" || pdfMode === "text") && <button className="reader-tool-button" title={`Размер текста: ${fontSize}px`} onClick={cycleFontSize}>Аа</button>}
         </div>
       </header>
@@ -166,6 +204,10 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
       </footer>
     </section>
   );
+}
+
+function clampReaderWidth(width: number) {
+  return Math.max(READER_WIDTH_MIN, Math.min(READER_WIDTH_MAX, Math.round(width) || 760));
 }
 
 function ReaderMessage({ title, text }: { title: string; text?: string }) {
@@ -228,7 +270,14 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize }:
         epubRef.current = epubBook;
         const rendition = epubBook.renderTo(containerRef.current, { width: "100%", height: "100%", flow: "paginated" });
         renditionRef.current = rendition;
-        rendition.themes.default({ body: { "font-family": "Georgia, serif", "line-height": "1.7", padding: "0 4%" } });
+        rendition.themes.default({ body: {
+          "font-family": "Georgia, serif",
+          "line-height": "1.7",
+          "text-align": "justify",
+          "hyphens": "auto",
+          "-webkit-hyphens": "auto",
+          padding: "0 4%"
+        } });
         rendition.themes.fontSize(`${fontSize}px`);
         applyEpubTheme(rendition, theme);
         void rendition.display(book.location || undefined);
