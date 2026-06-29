@@ -505,6 +505,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-text-flow .chapter-author { margin-bottom: 20px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
 .pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-align-last: left; text-justify: inter-word; white-space: pre-line; hyphens: auto; -webkit-hyphens: auto; }
+.pdf-text-flow-page .pdf-list-paragraph { margin-bottom: .85em; padding-left: 1.25em; text-indent: -1.25em; }
 .pdf-text-page-label, .pdf-text-loading { color: #8a8f8a; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
 .pdf-text-page-label { margin-bottom: 20px; }
 .pdf-empty-page, .pdf-text-loading { color: #7a807b; }

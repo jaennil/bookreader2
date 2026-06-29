@@ -698,7 +698,11 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
           <section className="pdf-text-flow-page" key={page.page} data-pdf-text-page={page.page}>
             <div className="pdf-text-page-label">Страница {page.page}</div>
             {page.paragraphs.length
-              ? page.paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>)
+              ? page.paragraphs.map((paragraph, index) => (
+                <p className={paragraph.trimStart().startsWith("• ") ? "pdf-list-paragraph" : undefined} key={index}>
+                  {paragraph}
+                </p>
+              ))
               : <p className="pdf-empty-page">На этой странице не найден текстовый слой.</p>}
           </section>
         ))}

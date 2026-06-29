@@ -34,7 +34,7 @@ const (
 	stateFileName       = "state.json"
 	bookDirectory       = "books"
 	pdfTextDirectory    = "pdf-text"
-	pdfTextCacheVersion = 3
+	pdfTextCacheVersion = 4
 )
 
 var (
@@ -619,25 +619,19 @@ func splitExtractedPDFText(text string) []string {
 	paragraphs := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		if shouldPreservePDFLineBreaks(block) {
-			lines := make([]string, 0, len(block))
-			for _, line := range block {
-				line = strings.Join(strings.Fields(line), " ")
-				if line != "" {
-					lines = append(lines, line)
-				}
-			}
-			if len(lines) > 0 {
-				paragraphs = append(paragraphs, strings.Join(lines, "\n"))
+			if paragraph := preserveExtractedPDFLines(block); paragraph != "" {
+				paragraphs = append(paragraphs, paragraph)
 			}
 			continue
 		}
-		paragraph := ""
-		for _, line := range block {
-			line = strings.TrimSpace(line)
-			paragraph = mergeExtractedPDFLine(paragraph, line)
-		}
-		if paragraph != "" {
-			paragraphs = append(paragraphs, paragraph)
+		for _, segment := range splitExtractedPDFBlock(block) {
+			paragraph := ""
+			for _, line := range segment {
+				paragraph = mergeExtractedPDFLine(paragraph, line)
+			}
+			if paragraph != "" {
+				paragraphs = append(paragraphs, paragraph)
+			}
 		}
 	}
 	return paragraphs
@@ -648,24 +642,130 @@ func shouldPreservePDFLineBreaks(lines []string) bool {
 		return false
 	}
 	dotLeaders := 0
-	listItems := 0
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.Contains(line, ".....") {
 			dotLeaders++
 		}
-		if isPDFListLine(line) {
-			listItems++
+	}
+	return dotLeaders > 0
+}
+
+func preserveExtractedPDFLines(block []string) string {
+	lines := make([]string, 0, len(block))
+	for _, line := range block {
+		line = normalizeExtractedPDFLine(line)
+		if line != "" {
+			lines = append(lines, line)
 		}
 	}
-	return dotLeaders > 0 || listItems >= 2
+	return strings.Join(lines, "\n")
+}
+
+func splitExtractedPDFBlock(block []string) [][]string {
+	maxLineLength := maxExtractedPDFLineLength(block)
+	segments := make([][]string, 0, len(block))
+	segment := make([]string, 0, len(block))
+	for _, rawLine := range block {
+		line := normalizeExtractedPDFLine(rawLine)
+		if line == "" {
+			continue
+		}
+		if len(segment) > 0 && startsNewExtractedPDFSegment(segment[len(segment)-1], rawLine, maxLineLength) {
+			segments = append(segments, segment)
+			segment = nil
+		}
+		segment = append(segment, line)
+	}
+	if len(segment) > 0 {
+		segments = append(segments, segment)
+	}
+	return segments
+}
+
+func startsNewExtractedPDFSegment(previous, rawLine string, maxLineLength int) bool {
+	line := strings.TrimSpace(rawLine)
+	if line == "" {
+		return false
+	}
+	if isPDFListLine(line) {
+		return true
+	}
+	if strings.HasPrefix(previous, "• ") {
+		return false
+	}
+	if strings.HasSuffix(previous, "-") && startsWithLowercase(line) {
+		return false
+	}
+	if !endsExtractedPDFParagraph(previous) {
+		return false
+	}
+	if maxLineLength > 0 && utf8.RuneCountInString(previous) > maxLineLength*2/3 {
+		return false
+	}
+	return startsWithUppercase(line)
+}
+
+func normalizeExtractedPDFLine(line string) string {
+	line = strings.ReplaceAll(line, "\u00a0", " ")
+	line = strings.ReplaceAll(line, "\u00ad", "")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if rest, ok := trimPDFBulletPrefix(line); ok {
+		rest = strings.Join(strings.Fields(rest), " ")
+		if rest == "" {
+			return "•"
+		}
+		return "• " + rest
+	}
+	return strings.Join(strings.Fields(line), " ")
+}
+
+func maxExtractedPDFLineLength(lines []string) int {
+	maximum := 0
+	for _, line := range lines {
+		line = normalizeExtractedPDFLine(line)
+		if line == "" {
+			continue
+		}
+		if length := utf8.RuneCountInString(line); length > maximum {
+			maximum = length
+		}
+	}
+	return maximum
+}
+
+func endsExtractedPDFParagraph(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	line = strings.TrimRight(line, "»”')]} ")
+	if line == "" {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(line)
+	switch r {
+	case '.', '!', '?', ':', ';', '…':
+		return true
+	default:
+		return false
+	}
+}
+
+func startsWithUppercase(value string) bool {
+	value = strings.TrimLeft(value, " \t\n\r«“\"'([—–-•")
+	r, _ := utf8.DecodeRuneInString(value)
+	return r != utf8.RuneError && (unicode.IsUpper(r) || unicode.IsDigit(r))
 }
 
 func isPDFListLine(line string) bool {
 	if line == "" {
 		return false
 	}
-	if strings.HasPrefix(line, "•") || strings.HasPrefix(line, "– ") || strings.HasPrefix(line, "— ") || strings.HasPrefix(line, "- ") {
+	if _, ok := trimPDFBulletPrefix(line); ok {
 		return true
 	}
 	first, _, _ := strings.Cut(line, " ")
@@ -683,6 +783,43 @@ func isPDFListLine(line string) bool {
 		}
 	}
 	return true
+}
+
+func trimPDFBulletPrefix(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", false
+	}
+	matched := false
+	for line != "" {
+		r, size := utf8.DecodeRuneInString(line)
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		if !isPDFBulletRune(r) {
+			break
+		}
+		line = line[size:]
+		matched = true
+	}
+	if matched {
+		return strings.TrimSpace(line), true
+	}
+	for _, prefix := range []string{"– ", "— ", "- "} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func isPDFBulletRune(r rune) bool {
+	switch r {
+	case '\u0089', '•', '‣', '⁃', '◦', '○', '●', '▪', '▫', '■', '□', '▢', '◻', '◽', '☐':
+		return true
+	default:
+		return false
+	}
 }
 
 func stripPDFPageNumber(lines []string) {

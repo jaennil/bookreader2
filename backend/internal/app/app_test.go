@@ -42,6 +42,26 @@ func TestSplitExtractedPDFTextPreservesContentsLines(t *testing.T) {
 	}
 }
 
+func TestSplitExtractedPDFTextKeepsParagraphAndListBreaks(t *testing.T) {
+	text := "Предисловие\n\nЕсли вам приходилось работать с серверными системами,\nто вас заваливали модными словечками. NoSQL!\nБольшие данные! В режиме реального\nвремени!\nЗа последнее десятилетие мы увидели нововведения\nи усовершенствования.\n\u0089\u0089Такие интернет-компании, как Google, Yahoo!, Amazon,\n  Microsoft и Twitter, обрабатывают большие объемы данных,\n  что вынуждает их создавать новые инструменты.\n\u0089\u0089Коммерческим компаниям приходится проверять гипотезы\n  с минимальными затратами и быстро реагировать.\n"
+	want := []string{
+		"Предисловие",
+		"Если вам приходилось работать с серверными системами, то вас заваливали модными словечками. NoSQL! Большие данные! В режиме реального времени!",
+		"За последнее десятилетие мы увидели нововведения и усовершенствования.",
+		"• Такие интернет-компании, как Google, Yahoo!, Amazon, Microsoft и Twitter, обрабатывают большие объемы данных, что вынуждает их создавать новые инструменты.",
+		"• Коммерческим компаниям приходится проверять гипотезы с минимальными затратами и быстро реагировать.",
+	}
+	got := splitExtractedPDFText(text)
+	if len(got) != len(want) {
+		t.Fatalf("paragraphs = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("paragraph %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
 func TestPDFTextCacheRoundTrip(t *testing.T) {
 	handler, err := New(t.TempDir(), "")
 	if err != nil {
