@@ -10,4 +10,4 @@ resources:
 images:
 - name: app
   newName: ghcr.io/jaennil/bookreader2/app
-  newTag: c6db963dd81f7eefe9436bdc57b01f2004b012ec
+  newTag: 5b6aacfccbc92a83b468ba90c2db7ba47767a4b2
