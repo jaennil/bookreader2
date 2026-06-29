@@ -59,21 +59,22 @@ type PublicUser struct {
 }
 
 type Book struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"-"`
-	Title        string    `json:"title"`
-	Author       string    `json:"author"`
-	Format       string    `json:"format"`
-	OriginalName string    `json:"originalName"`
-	StoredName   string    `json:"-"`
-	Size         int64     `json:"size"`
-	Progress     float64   `json:"progress"`
-	Location     string    `json:"location,omitempty"`
-	Page         int       `json:"page,omitempty"`
-	Pages        int       `json:"pages,omitempty"`
-	Favorite     bool      `json:"favorite"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID           string     `json:"id"`
+	UserID       string     `json:"-"`
+	Title        string     `json:"title"`
+	Author       string     `json:"author"`
+	Format       string     `json:"format"`
+	OriginalName string     `json:"originalName"`
+	StoredName   string     `json:"-"`
+	Size         int64      `json:"size"`
+	Progress     float64    `json:"progress"`
+	Location     string     `json:"location,omitempty"`
+	Page         int        `json:"page,omitempty"`
+	Pages        int        `json:"pages,omitempty"`
+	Favorite     bool       `json:"favorite"`
+	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
 }
 
 type Session struct {
@@ -353,13 +354,14 @@ func (a *App) uploadBook(w http.ResponseWriter, r *http.Request) {
 }
 
 type bookUpdate struct {
-	Title    *string  `json:"title"`
-	Author   *string  `json:"author"`
-	Progress *float64 `json:"progress"`
-	Location *string  `json:"location"`
-	Page     *int     `json:"page"`
-	Pages    *int     `json:"pages"`
-	Favorite *bool    `json:"favorite"`
+	Title      *string    `json:"title"`
+	Author     *string    `json:"author"`
+	Progress   *float64   `json:"progress"`
+	Location   *string    `json:"location"`
+	Page       *int       `json:"page"`
+	Pages      *int       `json:"pages"`
+	Favorite   *bool      `json:"favorite"`
+	FinishedAt *time.Time `json:"finishedAt"`
 }
 
 func (a *App) updateBook(w http.ResponseWriter, r *http.Request) {
@@ -400,6 +402,10 @@ func (a *App) updateBook(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Favorite != nil {
 		book.Favorite = *input.Favorite
+	}
+	if input.FinishedAt != nil && book.FinishedAt == nil {
+		finishedAt := input.FinishedAt.UTC()
+		book.FinishedAt = &finishedAt
 	}
 	book.UpdatedAt = time.Now().UTC()
 	a.state.Books[book.ID] = book

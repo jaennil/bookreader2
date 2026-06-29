@@ -32,6 +32,7 @@ const PDF_TEXT_BATCH_SIZE = 20;
 const READER_WIDTH_MIN = 520;
 const READER_WIDTH_MAX = 1100;
 const READER_WIDTH_PRESETS = [620, 760, 920, 1080];
+const READER_END_TOLERANCE = 4;
 
 interface ReaderProps {
   book: Book;
@@ -210,6 +211,14 @@ function clampReaderWidth(width: number) {
   return Math.max(READER_WIDTH_MIN, Math.min(READER_WIDTH_MAX, Math.round(width) || 760));
 }
 
+function isReaderAtEnd(element: HTMLElement) {
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= READER_END_TOLERANCE;
+}
+
+function getFinishedBookUpdate(book: Book): BookUpdate {
+  return book.finishedAt ? {} : { finishedAt: new Date().toISOString() };
+}
+
 function ReaderMessage({ title, text }: { title: string; text?: string }) {
   return <div className="reader-placeholder"><div><h2>{title}</h2>{text && <p>{text}</p>}</div></div>;
 }
@@ -247,6 +256,10 @@ function FB2View({ blob, book, onUpdate, registerNavigation }: ViewProps) {
       const scroll = scrollRef.current;
       if (!scroll) return;
       const maximum = scroll.scrollHeight - scroll.clientHeight;
+      if (isReaderAtEnd(scroll)) {
+        onUpdate({ progress: 100, ...getFinishedBookUpdate(book) });
+        return;
+      }
       onUpdate({ progress: maximum > 0 ? scroll.scrollTop / maximum * 100 : 0 });
     }, 120);
   }
@@ -283,10 +296,11 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize }:
         void rendition.display(book.location || undefined);
         void epubBook.ready.then(() => epubBook.locations.generate(1200));
         rendition.on("relocated", (location: any) => {
-          const progress = epubBook.locations.length()
+          const atEnd = Boolean(location.atEnd || location.end?.atEnd || location.end?.percentage >= .9999);
+          const progress = atEnd ? 100 : epubBook.locations.length()
             ? epubBook.locations.percentageFromCfi(location.start.cfi) * 100
             : book.progress;
-          onUpdate({ location: location.start.cfi, progress });
+          onUpdate({ location: location.start.cfi, progress, ...(atEnd ? getFinishedBookUpdate(book) : {}) });
         });
         registerNavigation({ previous: () => rendition.prev(), next: () => rendition.next() });
       });
@@ -472,12 +486,15 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
       const stage = stageRef.current;
       if (!stage || !document || mode !== "page") return;
       if (preservingLayoutRef.current) return;
-      const anchor = rememberAnchor(getPDFScrollAnchor(stage));
+      const finished = isReaderAtEnd(stage);
+      const anchor = rememberAnchor(finished
+        ? { page: document.numPages, offsetRatio: 1 }
+        : getPDFScrollAnchor(stage));
       const page = anchor.page;
       if (page !== currentPage) {
         setCurrentPage(page);
       }
-      onUpdate(getPDFAnchorUpdate(anchor, document.numPages));
+      onUpdate({ ...getPDFAnchorUpdate(anchor, document.numPages), ...(finished ? getFinishedBookUpdate(book) : {}) });
     }, 70);
   }
 
@@ -645,11 +662,19 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => {
       if (preservingLayoutRef.current) return;
-      const anchor = rememberAnchor();
+      const scroll = scrollRef.current;
+      const finished = Boolean(scroll && loaded === totalPages && isReaderAtEnd(scroll));
+      const anchor = finished
+        ? normalizePDFAnchor({ page: totalPages, offsetRatio: 1 }, totalPages)
+        : rememberAnchor();
+      if (finished) {
+        positionRef.current = anchor;
+        onAnchorChange(anchor);
+      }
       if (anchor.page !== currentPage) {
         setCurrentPage(anchor.page);
       }
-      onUpdate(getPDFAnchorUpdate(anchor, totalPages));
+      onUpdate({ ...getPDFAnchorUpdate(anchor, totalPages), ...(finished ? getFinishedBookUpdate(book) : {}) });
     }, 120);
   }
 

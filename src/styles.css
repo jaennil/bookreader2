@@ -361,6 +361,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .card-progress .progress-track { flex: 1; height: 2px; background: #dad8d0; }
 .card-progress .progress-fill { background: var(--green); }
 .card-progress span { color: #8a8e89; font-size: 8px; }
+.card-progress.finished span { color: var(--green); font-weight: 700; }
 
 .empty-state { grid-column: 1 / -1; padding: 60px 20px; border: 1px dashed #d1cec5; border-radius: 20px; text-align: center; }
 .empty-state svg { width: 28px; color: var(--green); }

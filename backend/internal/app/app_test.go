@@ -84,7 +84,7 @@ func TestAccountBookAndProgressFlow(t *testing.T) {
 		t.Fatalf("unexpected book: %#v", book)
 	}
 
-	patch := authenticatedRequest(http.MethodPatch, "/api/books/"+book.ID, `{"progress":42.5,"page":12,"favorite":true}`, token)
+	patch := authenticatedRequest(http.MethodPatch, "/api/books/"+book.ID, `{"progress":100,"page":12,"favorite":true,"finishedAt":"2026-06-29T10:00:00Z"}`, token)
 	patchResponse := httptest.NewRecorder()
 	handler.ServeHTTP(patchResponse, patch)
 	if patchResponse.Code != http.StatusOK {
@@ -93,7 +93,7 @@ func TestAccountBookAndProgressFlow(t *testing.T) {
 	if err := json.Unmarshal(patchResponse.Body.Bytes(), &book); err != nil {
 		t.Fatal(err)
 	}
-	if book.Progress != 42.5 || book.Page != 12 || !book.Favorite {
+	if book.Progress != 100 || book.Page != 12 || !book.Favorite || book.FinishedAt == nil {
 		t.Fatalf("progress not persisted: %#v", book)
 	}
 
@@ -170,6 +170,16 @@ func TestBooksSurviveRestart(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload status = %d, body = %s", response.Code, response.Body.String())
 	}
+	var uploaded Book
+	if err := json.Unmarshal(response.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	finish := authenticatedRequest(http.MethodPatch, "/api/books/"+uploaded.ID, `{"progress":100,"finishedAt":"2026-06-29T10:00:00Z"}`, token)
+	finishResponse := httptest.NewRecorder()
+	handler.ServeHTTP(finishResponse, finish)
+	if finishResponse.Code != http.StatusOK {
+		t.Fatalf("finish status = %d, body = %s", finishResponse.Code, finishResponse.Body.String())
+	}
 
 	restarted, err := New(dataDir, "")
 	if err != nil {
@@ -189,7 +199,7 @@ func TestBooksSurviveRestart(t *testing.T) {
 		t.Fatalf("book was not restored: %#v", books)
 	}
 	restored := restarted.state.Books[books[0].ID]
-	if restored.StoredName == "" || restored.UserID == "" {
+	if restored.StoredName == "" || restored.UserID == "" || restored.FinishedAt == nil {
 		t.Fatalf("private book data was not restored: %#v", restored)
 	}
 }

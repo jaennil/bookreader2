@@ -7,7 +7,7 @@ import { BackIcon, CheckIcon, ChevronIcon, CloseIcon, CloudIcon, HeartIcon, Libr
 import type { Book, BookUpdate, User } from "./types";
 
 type View = "library" | "favorites" | "uploads";
-type Filter = "all" | "reading" | "new";
+type Filter = "all" | "reading" | "finished" | "new";
 
 const palette = ["#925b54", "#315c69", "#676449", "#684d74", "#3e6657", "#9b7148"];
 const styles = ["type", "sun", "orbit", "lines"];
@@ -51,14 +51,16 @@ export default function App() {
   }, []);
 
   const visibleBooks = useMemo(() => books.filter(book => {
+    const finished = isBookFinished(book);
     if (view === "favorites" && !book.favorite) return false;
-    if (filter === "reading" && !(book.progress > 0 && book.progress < 100)) return false;
-    if (filter === "new" && book.progress !== 0) return false;
+    if (filter === "reading" && !(book.progress > 0 && !finished)) return false;
+    if (filter === "finished" && !finished) return false;
+    if (filter === "new" && (book.progress !== 0 || finished)) return false;
     if (query && !`${book.title} ${book.author}`.toLowerCase().includes(query.toLowerCase())) return false;
     return true;
   }), [books, filter, query, view]);
 
-  const latest = useMemo(() => [...books].filter(book => book.progress > 0).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], [books]);
+  const latest = useMemo(() => [...books].filter(book => book.progress > 0 && !isBookFinished(book)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], [books]);
   const activeBook = books.find(book => book.id === activeBookID);
 
   function authenticated(nextUser: User) {
@@ -155,6 +157,7 @@ export default function App() {
                 <div className="filter-tabs" role="tablist">
                   <FilterButton active={filter === "all"} onClick={() => setFilter("all")}>Все</FilterButton>
                   <FilterButton active={filter === "reading"} onClick={() => setFilter("reading")}>Читаю</FilterButton>
+                  <FilterButton active={filter === "finished"} onClick={() => setFilter("finished")}>Прочитано</FilterButton>
                   <FilterButton active={filter === "new"} onClick={() => setFilter("new")}>Новые</FilterButton>
                 </div>
               </div>
@@ -200,7 +203,12 @@ function ContinueCard({ book, onOpen }: { book: Book; onOpen: () => void }) {
 
 function BookCard({ book, onOpen, onFavorite, onDelete }: { book: Book; onOpen: () => void; onFavorite: () => void; onDelete: () => void }) {
   const cover = coverData(book);
-  return <article className="book-card" onClick={onOpen}><div className="cover-shell"><div className={`book-cover style-${cover.style}`} style={{ background: cover.color, color: cover.textColor }}><span className="cover-kicker">{book.format} · Полка</span><div className="cover-title">{book.title}</div><span className="cover-decoration">{cover.decoration}</span><span className="cover-author">{book.author}</span><span className="format-badge">{book.format}</span></div><button className={`favorite-button ${book.favorite ? "active" : ""}`} aria-label="Избранное" onClick={event => { event.stopPropagation(); onFavorite(); }}><HeartIcon/></button><button className="delete-button" aria-label="Удалить книгу" onClick={event => { event.stopPropagation(); onDelete(); }}><TrashIcon/></button></div><div className="book-meta"><h3>{book.title}</h3><p>{book.author} · {formatSize(book.size)}</p>{book.progress > 0 && <div className="card-progress"><Progress value={book.progress}/><span>{Math.round(book.progress)}%</span></div>}</div></article>;
+  const finished = isBookFinished(book);
+  return <article className="book-card" onClick={onOpen}><div className="cover-shell"><div className={`book-cover style-${cover.style}`} style={{ background: cover.color, color: cover.textColor }}><span className="cover-kicker">{book.format} · Полка</span><div className="cover-title">{book.title}</div><span className="cover-decoration">{cover.decoration}</span><span className="cover-author">{book.author}</span><span className="format-badge">{book.format}</span></div><button className={`favorite-button ${book.favorite ? "active" : ""}`} aria-label="Избранное" onClick={event => { event.stopPropagation(); onFavorite(); }}><HeartIcon/></button><button className="delete-button" aria-label="Удалить книгу" onClick={event => { event.stopPropagation(); onDelete(); }}><TrashIcon/></button></div><div className="book-meta"><h3>{book.title}</h3><p>{book.author} · {formatSize(book.size)}</p>{(book.progress > 0 || finished) && <div className={`card-progress ${finished ? "finished" : ""}`}><Progress value={finished ? 100 : book.progress}/><span>{finished ? "Прочитано" : `${Math.round(book.progress)}%`}</span></div>}</div></article>;
+}
+
+function isBookFinished(book: Book) {
+  return Boolean(book.finishedAt) || book.progress >= 100;
 }
 
 function Progress({ value }: { value: number }) {

@@ -19,6 +19,7 @@ export interface Book {
   page?: number;
   pages?: number;
   favorite: boolean;
+  finishedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +37,7 @@ export interface BookUpdate {
   page?: number;
   pages?: number;
   favorite?: boolean;
+  finishedAt?: string;
 }
 
 export interface PDFTextPagePayload {
