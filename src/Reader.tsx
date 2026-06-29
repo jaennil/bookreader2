@@ -33,6 +33,7 @@ const READER_WIDTH_MIN = 520;
 const READER_WIDTH_MAX = 1100;
 const READER_WIDTH_PRESETS = [620, 760, 920, 1080];
 const READER_END_TOLERANCE = 4;
+const READER_SCROLL_RETRY_MS = 320;
 
 interface ReaderProps {
   book: Book;
@@ -485,7 +486,10 @@ function PDFView({ blob, book, fontSize, onUpdate, registerNavigation, mode, ini
     scrollTimer.current = window.setTimeout(() => {
       const stage = stageRef.current;
       if (!stage || !document || mode !== "page") return;
-      if (preservingLayoutRef.current) return;
+      if (preservingLayoutRef.current) {
+        scrollTimer.current = window.setTimeout(handleScroll, READER_SCROLL_RETRY_MS);
+        return;
+      }
       const finished = isReaderAtEnd(stage);
       const anchor = rememberAnchor(finished
         ? { page: document.numPages, offsetRatio: 1 }
@@ -657,9 +661,12 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
   }, [onAnchorCaptureReady, rememberAnchor]);
 
   function handleScroll() {
-    if (preservingLayoutRef.current) return;
-    rememberAnchor();
     window.clearTimeout(scrollTimer.current);
+    if (preservingLayoutRef.current) {
+      scrollTimer.current = window.setTimeout(handleScroll, READER_SCROLL_RETRY_MS);
+      return;
+    }
+    rememberAnchor();
     scrollTimer.current = window.setTimeout(() => {
       if (preservingLayoutRef.current) return;
       const scroll = scrollRef.current;
