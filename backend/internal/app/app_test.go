@@ -68,7 +68,10 @@ func TestPDFTextCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := newPDFTextCache()
-	cache.Pages[7] = []string{"Сохранённый текст"}
+	cache.Pages[7] = pdfTextPageCache{
+		Paragraphs: []string{"Сохранённый текст"},
+		Images:     []pdfTextImage{{ID: "1", AfterParagraph: 1, Width: 200, Height: 100, PageWidth: 600, PageHeight: 800}},
+	}
 	if err := handler.savePDFTextCache("book-id", cache); err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +79,31 @@ func TestPDFTextCacheRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Pages[7]) != 1 || loaded.Pages[7][0] != "Сохранённый текст" {
+	if len(loaded.Pages[7].Paragraphs) != 1 || loaded.Pages[7].Paragraphs[0] != "Сохранённый текст" || len(loaded.Pages[7].Images) != 1 {
 		t.Fatalf("cache was not restored: %#v", loaded)
+	}
+}
+
+func TestParsePDFImageLayoutPlacesImageBetweenText(t *testing.T) {
+	data := []byte(`<?xml version="1.0"?><pdf2xml>
+<page number="4" width="600" height="800">
+  <text top="50" left="40" height="18"><b>Введение</b></text>
+  <image top="200" left="100" width="400" height="240" src="figure.png"/>
+  <text top="500" left="40" height="18">Заключение</text>
+</page></pdf2xml>`)
+	images, err := parsePDFImageLayout(data, map[int][]string{4: {"Введение", "Заключение"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(images[4]) != 1 {
+		t.Fatalf("images = %#v", images)
+	}
+	image := images[4][0]
+	if image.ID != "1" || image.AfterParagraph != 1 {
+		t.Fatalf("unexpected image placement: %#v", image)
+	}
+	if image.Width != 402 || image.Height != 242 {
+		t.Fatalf("unexpected padded bounds: %#v", image)
 	}
 }
 

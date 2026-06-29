@@ -9,10 +9,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -34,7 +36,9 @@ const (
 	stateFileName       = "state.json"
 	bookDirectory       = "books"
 	pdfTextDirectory    = "pdf-text"
-	pdfTextCacheVersion = 4
+	pdfImageDirectory   = "pdf-images"
+	pdfTextCacheVersion = 5
+	pdfImageDPI         = 144
 )
 
 var (
@@ -119,6 +123,9 @@ func New(dataDir, webDir string) (*App, error) {
 	if err := os.MkdirAll(filepath.Join(dataDir, pdfTextDirectory), 0o750); err != nil {
 		return nil, fmt.Errorf("create pdf text cache directory: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Join(dataDir, pdfImageDirectory), 0o750); err != nil {
+		return nil, fmt.Errorf("create pdf image cache directory: %w", err)
+	}
 
 	a := &App{
 		dataDir: dataDir,
@@ -155,6 +162,7 @@ func (a *App) routes() {
 	a.mux.HandleFunc("DELETE /api/books/{id}", a.deleteBook)
 	a.mux.HandleFunc("GET /api/books/{id}/file", a.bookFile)
 	a.mux.HandleFunc("GET /api/books/{id}/pdf-text", a.pdfText)
+	a.mux.HandleFunc("GET /api/books/{id}/pdf-images/{page}/{image}", a.pdfImage)
 	a.mux.HandleFunc("/", a.frontend)
 }
 
@@ -445,6 +453,9 @@ func (a *App) deleteBook(w http.ResponseWriter, r *http.Request) {
 	if err := os.Remove(a.pdfTextCachePath(book.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("delete pdf text cache: %v", err)
 	}
+	if err := os.RemoveAll(a.pdfImageBookDirectory(book.ID)); err != nil {
+		log.Printf("delete pdf image cache: %v", err)
+	}
 	a.pdfTextMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -471,13 +482,30 @@ func (a *App) bookFile(w http.ResponseWriter, r *http.Request) {
 }
 
 type pdfTextPage struct {
-	Page       int      `json:"page"`
-	Paragraphs []string `json:"paragraphs"`
+	Page       int            `json:"page"`
+	Paragraphs []string       `json:"paragraphs"`
+	Images     []pdfTextImage `json:"images,omitempty"`
+}
+
+type pdfTextImage struct {
+	ID             string  `json:"id"`
+	AfterParagraph int     `json:"afterParagraph"`
+	Left           float64 `json:"left"`
+	Top            float64 `json:"top"`
+	Width          float64 `json:"width"`
+	Height         float64 `json:"height"`
+	PageWidth      float64 `json:"pageWidth"`
+	PageHeight     float64 `json:"pageHeight"`
+}
+
+type pdfTextPageCache struct {
+	Paragraphs []string       `json:"paragraphs"`
+	Images     []pdfTextImage `json:"images,omitempty"`
 }
 
 type pdfTextCache struct {
-	Version int              `json:"version"`
-	Pages   map[int][]string `json:"pages"`
+	Version int                      `json:"version"`
+	Pages   map[int]pdfTextPageCache `json:"pages"`
 }
 
 func (a *App) pdfText(w http.ResponseWriter, r *http.Request) {
@@ -526,6 +554,101 @@ func (a *App) pdfText(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"pages": pages, "totalPages": totalPages})
 }
 
+func (a *App) pdfImage(w http.ResponseWriter, r *http.Request) {
+	userID, _, ok := a.authenticate(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Требуется вход")
+		return
+	}
+	a.mu.RLock()
+	book, exists := a.state.Books[r.PathValue("id")]
+	a.mu.RUnlock()
+	if !exists || book.UserID != userID || book.Format != "PDF" {
+		writeError(w, http.StatusNotFound, "Книга не найдена")
+		return
+	}
+	page, err := strconv.Atoi(r.PathValue("page"))
+	if err != nil || page < 1 {
+		writeError(w, http.StatusBadRequest, "Некорректная страница")
+		return
+	}
+
+	a.pdfTextMu.Lock()
+	cache, err := a.loadPDFTextCache(book.ID)
+	if err != nil {
+		a.pdfTextMu.Unlock()
+		writeError(w, http.StatusNotFound, "Изображение не найдено")
+		return
+	}
+	cachedPage := cache.Pages[page]
+	var image *pdfTextImage
+	for index := range cachedPage.Images {
+		candidate := &cachedPage.Images[index]
+		if candidate.ID == r.PathValue("image") {
+			image = candidate
+			break
+		}
+	}
+	if image == nil {
+		a.pdfTextMu.Unlock()
+		writeError(w, http.StatusNotFound, "Изображение не найдено")
+		return
+	}
+	imagePath := a.pdfImageCachePath(book.ID, page, image.ID)
+	if _, err := os.Stat(imagePath); errors.Is(err, os.ErrNotExist) {
+		filePath := filepath.Join(a.dataDir, bookDirectory, book.StoredName)
+		if err := renderPDFImage(r.Context(), filePath, imagePath, page, *image); err != nil {
+			a.pdfTextMu.Unlock()
+			log.Printf("render pdf image %s page %d image %s: %v", book.ID, page, image.ID, err)
+			writeError(w, http.StatusInternalServerError, "Не удалось подготовить изображение")
+			return
+		}
+	} else if err != nil {
+		a.pdfTextMu.Unlock()
+		writeError(w, http.StatusInternalServerError, "Не удалось открыть изображение")
+		return
+	}
+	a.pdfTextMu.Unlock()
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	http.ServeFile(w, r, imagePath)
+}
+
+func renderPDFImage(ctx context.Context, filePath, outputPath string, page int, image pdfTextImage) error {
+	if image.PageWidth <= 0 || image.PageHeight <= 0 || image.Width <= 0 || image.Height <= 0 {
+		return errors.New("invalid pdf image bounds")
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
+		return err
+	}
+	directory, err := os.MkdirTemp(filepath.Dir(outputPath), ".render-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(directory)
+	prefix := filepath.Join(directory, "image")
+	scale := float64(pdfImageDPI) / 72
+	x := max(0, int(math.Floor(image.Left*scale)))
+	y := max(0, int(math.Floor(image.Top*scale)))
+	width := max(1, int(math.Ceil(image.Width*scale)))
+	height := max(1, int(math.Ceil(image.Height*scale)))
+	commandContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(commandContext, "pdftoppm", "-q", "-cropbox", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-singlefile", "-r", strconv.Itoa(pdfImageDPI), "-x", strconv.Itoa(x), "-y", strconv.Itoa(y), "-W", strconv.Itoa(width), "-H", strconv.Itoa(height), "-png", filePath, prefix)
+	if output, err := command.CombinedOutput(); err != nil {
+		if commandContext.Err() != nil {
+			return commandContext.Err()
+		}
+		return fmt.Errorf("pdftoppm: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	temporaryPath := prefix + ".png"
+	if err := os.Chmod(temporaryPath, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, outputPath)
+}
+
 func (a *App) cachedPDFTextPages(ctx context.Context, bookID, filePath string, from, to int) ([]pdfTextPage, error) {
 	a.pdfTextMu.Lock()
 	defer a.pdfTextMu.Unlock()
@@ -553,7 +676,7 @@ func (a *App) cachedPDFTextPages(ctx context.Context, bookID, filePath string, f
 			extractionErr = err
 		} else {
 			for _, page := range extracted {
-				cache.Pages[page.Page] = page.Paragraphs
+				cache.Pages[page.Page] = pdfTextPageCache{Paragraphs: page.Paragraphs, Images: page.Images}
 			}
 			if err := a.savePDFTextCache(bookID, cache); err != nil {
 				extractionErr = fmt.Errorf("save cache: %w", err)
@@ -563,14 +686,15 @@ func (a *App) cachedPDFTextPages(ctx context.Context, bookID, filePath string, f
 
 	pages := make([]pdfTextPage, 0, to-from+1)
 	for page := from; page <= to; page++ {
-		pages = append(pages, pdfTextPage{Page: page, Paragraphs: cache.Pages[page]})
+		cached := cache.Pages[page]
+		pages = append(pages, pdfTextPage{Page: page, Paragraphs: cached.Paragraphs, Images: cached.Images})
 	}
 	return pages, extractionErr
 }
 
 func extractPDFTextPages(ctx context.Context, filePath string, from, to int) ([]pdfTextPage, error) {
-	timeout := 8*time.Second + time.Duration(to-from)*time.Second
-	ctx, cancel := context.WithTimeout(ctx, min(30*time.Second, timeout))
+	timeout := 12*time.Second + time.Duration(to-from)*1500*time.Millisecond
+	ctx, cancel := context.WithTimeout(ctx, min(45*time.Second, timeout))
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "pdftotext", "-enc", "UTF-8", "-f", strconv.Itoa(from), "-l", strconv.Itoa(to), "-layout", filePath, "-").Output()
 	if ctx.Err() != nil {
@@ -591,7 +715,237 @@ func extractPDFTextPages(ctx context.Context, filePath string, from, to int) ([]
 		}
 		pages = append(pages, pdfTextPage{Page: page, Paragraphs: splitExtractedPDFText(pageText)})
 	}
+	images, err := extractPDFImageLayout(ctx, filePath, from, to, pages)
+	if err != nil {
+		return nil, err
+	}
+	for index := range pages {
+		pages[index].Images = images[pages[index].Page]
+	}
 	return pages, nil
+}
+
+type pdfHTMLDocument struct {
+	Pages []pdfHTMLPage `xml:"page"`
+}
+
+type pdfHTMLPage struct {
+	Number int            `xml:"number,attr"`
+	Width  float64        `xml:"width,attr"`
+	Height float64        `xml:"height,attr"`
+	Images []pdfHTMLImage `xml:"image"`
+	Texts  []pdfHTMLText  `xml:"text"`
+}
+
+type pdfHTMLImage struct {
+	Left   float64 `xml:"left,attr"`
+	Top    float64 `xml:"top,attr"`
+	Width  float64 `xml:"width,attr"`
+	Height float64 `xml:"height,attr"`
+}
+
+type pdfHTMLText struct {
+	Left   float64
+	Top    float64
+	Height float64
+	Text   string
+}
+
+func (text *pdfHTMLText) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error {
+	for _, attribute := range start.Attr {
+		value, err := strconv.ParseFloat(attribute.Value, 64)
+		if err != nil {
+			continue
+		}
+		switch attribute.Name.Local {
+		case "left":
+			text.Left = value
+		case "top":
+			text.Top = value
+		case "height":
+			text.Height = value
+		}
+	}
+	var content strings.Builder
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			content.Write(value)
+		case xml.EndElement:
+			if value.Name == start.Name {
+				text.Text = content.String()
+				return nil
+			}
+		}
+	}
+}
+
+func extractPDFImageLayout(ctx context.Context, filePath string, from, to int, pages []pdfTextPage) (map[int][]pdfTextImage, error) {
+	directory, err := os.MkdirTemp("", "bookreader-pdf-layout-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(directory)
+	xmlPath := filepath.Join(directory, "layout.xml")
+	command := exec.CommandContext(ctx, "pdftohtml", "-q", "-xml", "-hidden", "-noroundcoord", "-f", strconv.Itoa(from), "-l", strconv.Itoa(to), "-zoom", "1", "-fmt", "png", filePath, xmlPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("pdftohtml: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	data, err := os.ReadFile(xmlPath)
+	if err != nil {
+		return nil, err
+	}
+	paragraphs := make(map[int][]string, len(pages))
+	for _, page := range pages {
+		paragraphs[page.Page] = page.Paragraphs
+	}
+	return parsePDFImageLayout(data, paragraphs)
+}
+
+func parsePDFImageLayout(data []byte, paragraphs map[int][]string) (map[int][]pdfTextImage, error) {
+	var document pdfHTMLDocument
+	if err := xml.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	result := make(map[int][]pdfTextImage)
+	for _, page := range document.Pages {
+		if page.Width <= 0 || page.Height <= 0 {
+			continue
+		}
+		sort.Slice(page.Texts, func(left, right int) bool {
+			if page.Texts[left].Top == page.Texts[right].Top {
+				return page.Texts[left].Left < page.Texts[right].Left
+			}
+			return page.Texts[left].Top < page.Texts[right].Top
+		})
+		sort.Slice(page.Images, func(left, right int) bool {
+			if page.Images[left].Top == page.Images[right].Top {
+				return page.Images[left].Left < page.Images[right].Left
+			}
+			return page.Images[left].Top < page.Images[right].Top
+		})
+		images := make([]pdfTextImage, 0, len(page.Images))
+		for _, source := range page.Images {
+			left := max(0.0, source.Left-1)
+			top := max(0.0, source.Top-1)
+			right := min(page.Width, source.Left+source.Width+1)
+			bottom := min(page.Height, source.Top+source.Height+1)
+			width, height := right-left, bottom-top
+			if width < 16 || height < 16 || width*height < page.Width*page.Height*.002 {
+				continue
+			}
+			candidate := pdfTextImage{
+				ID:             strconv.Itoa(len(images) + 1),
+				AfterParagraph: estimatePDFImageInsertion(paragraphs[page.Number], page.Texts, top),
+				Left:           left,
+				Top:            top,
+				Width:          width,
+				Height:         height,
+				PageWidth:      page.Width,
+				PageHeight:     page.Height,
+			}
+			if len(images) > 0 && samePDFImageBounds(images[len(images)-1], candidate) {
+				continue
+			}
+			images = append(images, candidate)
+		}
+		if len(images) > 0 {
+			result[page.Number] = images
+		}
+	}
+	return result, nil
+}
+
+func estimatePDFImageInsertion(paragraphs []string, texts []pdfHTMLText, imageTop float64) int {
+	if len(paragraphs) == 0 {
+		return 0
+	}
+	matched, insertion := 0, 0
+	for index, paragraph := range paragraphs {
+		if top, ok := matchPDFParagraphTop(paragraph, texts); ok {
+			matched++
+			if top < imageTop {
+				insertion = index + 1
+			}
+		}
+	}
+	if matched >= 2 || matched == len(paragraphs) {
+		return min(len(paragraphs), insertion)
+	}
+	textBefore := 0
+	for _, text := range texts {
+		if text.Top+text.Height/2 < imageTop {
+			textBefore++
+		}
+	}
+	if len(texts) == 0 {
+		return 0
+	}
+	return min(len(paragraphs), int(math.Round(float64(textBefore)/float64(len(texts))*float64(len(paragraphs)))))
+}
+
+func matchPDFParagraphTop(paragraph string, texts []pdfHTMLText) (float64, bool) {
+	target := normalizePDFMatchText(paragraph)
+	if target == "" {
+		return 0, false
+	}
+	bestScore, bestTop := 0, 0.0
+	for _, text := range texts {
+		candidate := normalizePDFMatchText(text.Text)
+		if candidate == "" {
+			continue
+		}
+		score := commonPDFTextPrefix(target, candidate)
+		if score > bestScore {
+			bestScore, bestTop = score, text.Top
+		}
+	}
+	return bestTop, bestScore >= min(8, utf8.RuneCountInString(target))
+}
+
+func normalizePDFMatchText(value string) string {
+	var normalized strings.Builder
+	space := false
+	for _, char := range strings.ToLower(value) {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			if space && normalized.Len() > 0 {
+				normalized.WriteByte(' ')
+			}
+			normalized.WriteRune(char)
+			space = false
+		} else {
+			space = true
+		}
+	}
+	fields := strings.Fields(normalized.String())
+	if len(fields) > 1 {
+		if _, err := strconv.Atoi(fields[0]); err == nil {
+			fields = fields[1:]
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func commonPDFTextPrefix(left, right string) int {
+	leftRunes, rightRunes := []rune(left), []rune(right)
+	limit := min(len(leftRunes), len(rightRunes))
+	for index := 0; index < limit; index++ {
+		if leftRunes[index] != rightRunes[index] {
+			return index
+		}
+	}
+	return limit
+}
+
+func samePDFImageBounds(left, right pdfTextImage) bool {
+	return math.Abs(left.Left-right.Left) < 1 && math.Abs(left.Top-right.Top) < 1 && math.Abs(left.Width-right.Width) < 1 && math.Abs(left.Height-right.Height) < 1
 }
 
 func splitExtractedPDFText(text string) []string {
@@ -873,11 +1227,19 @@ func startsWithLowercase(value string) bool {
 }
 
 func newPDFTextCache() pdfTextCache {
-	return pdfTextCache{Version: pdfTextCacheVersion, Pages: make(map[int][]string)}
+	return pdfTextCache{Version: pdfTextCacheVersion, Pages: make(map[int]pdfTextPageCache)}
 }
 
 func (a *App) pdfTextCachePath(bookID string) string {
 	return filepath.Join(a.dataDir, pdfTextDirectory, bookID+".json")
+}
+
+func (a *App) pdfImageBookDirectory(bookID string) string {
+	return filepath.Join(a.dataDir, pdfImageDirectory, bookID)
+}
+
+func (a *App) pdfImageCachePath(bookID string, page int, imageID string) string {
+	return filepath.Join(a.pdfImageBookDirectory(bookID), fmt.Sprintf("%d-%s.png", page, imageID))
 }
 
 func (a *App) loadPDFTextCache(bookID string) (pdfTextCache, error) {

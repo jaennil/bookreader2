@@ -506,12 +506,20 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
 .pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-align-last: left; text-justify: inter-word; white-space: pre-line; hyphens: auto; -webkit-hyphens: auto; }
 .pdf-text-flow-page .pdf-list-paragraph { margin-bottom: .85em; padding-left: 1.25em; text-indent: -1.25em; }
+.pdf-text-figure { margin: 1.45em auto 1.8em; }
+.pdf-text-figure-frame { position: relative; display: grid; width: 100%; place-items: center; overflow: hidden; border: 1px solid rgba(72, 82, 76, .12); border-radius: 3px; background: #fff; color: #7a807b; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; line-height: 1.4; text-align: center; }
+.pdf-text-figure-frame::before { position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, rgba(54, 75, 66, .06) 50%, transparent 65%); content: ""; transform: translateX(-100%); animation: pdf-figure-loading 1.4s ease-in-out infinite; }
+.pdf-text-figure-frame:has(img)::before { display: none; }
+.pdf-text-figure-frame img { position: relative; z-index: 1; display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; }
+.pdf-text-figure-frame span { position: relative; z-index: 1; padding: 12px; }
+@keyframes pdf-figure-loading { to { transform: translateX(100%); } }
 .pdf-text-page-label, .pdf-text-loading { color: #8a8f8a; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
 .pdf-text-page-label { margin-bottom: 20px; }
 .pdf-empty-page, .pdf-text-loading { color: #7a807b; }
 .reader[data-theme="dark"] .pdf-text-flow { color: #d4d9d5; }
 .reader[data-theme="dark"] .pdf-text-flow-head > p:last-child, .reader[data-theme="dark"] .pdf-empty-page, .reader[data-theme="dark"] .pdf-text-loading { color: #a8b3ad; }
 .reader[data-theme="dark"] .pdf-text-flow-page { border-color: rgba(255,255,255,.12); }
+.reader[data-theme="dark"] .pdf-text-figure-frame { border-color: rgba(255,255,255,.14); }
 .reader-placeholder { display: grid; place-items: center; height: 100%; padding: 30px; text-align: center; }
 .reader-placeholder div { max-width: 440px; }
 .reader-placeholder h2 { font-family: Georgia, serif; font-weight: 400; }

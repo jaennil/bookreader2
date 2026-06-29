@@ -93,6 +93,15 @@ export const api = {
     return request<{ pages: PDFTextPagePayload[]; totalPages: number }>(`/api/books/${id}/pdf-text?${query}`);
   },
 
+  async pdfImage(id: string, page: number, image: string, signal?: AbortSignal): Promise<Blob> {
+    const response = await fetch(`/api/books/${id}/pdf-images/${page}/${encodeURIComponent(image)}`, {
+      headers: token() ? { Authorization: `Bearer ${token()}` } : undefined,
+      signal
+    });
+    if (!response.ok) throw new APIError("Не удалось загрузить иллюстрацию", response.status);
+    return response.blob();
+  },
+
   async bookBlob(id: string, signal?: AbortSignal): Promise<Blob> {
     const response = await fetch(`/api/books/${id}/file`, {
       headers: token() ? { Authorization: `Bearer ${token()}` } : undefined,

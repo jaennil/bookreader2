@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "./api";
 import { BackIcon, ChevronIcon } from "./icons";
-import type { Book, BookUpdate } from "./types";
+import type { Book, BookUpdate, PDFTextImagePayload, PDFTextPagePayload } from "./types";
 
 type Theme = "paper" | "sepia" | "dark";
 type PDFMode = "page" | "text";
@@ -13,7 +13,7 @@ type PDFPageViewport = ReturnType<PDFPageProxy["getViewport"]>;
 type PDFTextLayer = InstanceType<typeof import("pdfjs-dist").TextLayer>;
 type PDFScrollAnchor = { page: number; offsetRatio: number };
 type PDFAnchorCapture = () => PDFScrollAnchor;
-type PDFTextPage = { page: number; paragraphs: string[] };
+type PDFTextPage = PDFTextPagePayload;
 type PDFDestinationTarget = { page: number; offsetRatio: number };
 type PDFLinkAnnotation = {
   subtype?: string;
@@ -532,7 +532,7 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
   const [totalPages, setTotalPages] = useState(Math.max(1, book.pages || 0, initialAnchor.page));
   const [loadError, setLoadError] = useState("");
   const [currentPage, setCurrentPage] = useState(book.page || 1);
-  const hasAnyText = pages.some(page => page.paragraphs.length > 0);
+  const hasAnyContent = pages.some(page => page.paragraphs.length > 0 || Boolean(page.images?.length));
   const restorePosition = useCallback(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
@@ -692,25 +692,98 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
           <p className="eyebrow">PDF в текстовом режиме</p>
           <h1>{book.title}</h1>
           <div className="chapter-author">{book.author}</div>
-          <p>Текст извлечён из PDF и перевёрстан для телефона. Если в книге есть сложные схемы или таблицы, переключитесь в режим PDF.</p>
+          <p>Текст перевёрстан для телефона, а иллюстрации сохранены рядом с исходным местом. Для сложных схем и таблиц можно переключиться в режим PDF.</p>
         </header>
         {pages.map(page => (
           <section className="pdf-text-flow-page" key={page.page} data-pdf-text-page={page.page}>
             <div className="pdf-text-page-label">Страница {page.page}</div>
-            {page.paragraphs.length
-              ? page.paragraphs.map((paragraph, index) => (
-                <p className={paragraph.trimStart().startsWith("• ") ? "pdf-list-paragraph" : undefined} key={index}>
-                  {paragraph}
-                </p>
-              ))
+            {page.paragraphs.length || page.images?.length
+              ? <PDFTextPageContent bookID={book.id} page={page}/>
               : <p className="pdf-empty-page">На этой странице не найден текстовый слой.</p>}
           </section>
         ))}
         {loadError && <div className="pdf-text-loading">{loadError}</div>}
         {!loadError && loaded < totalPages && <div className="pdf-text-loading">Подготавливаем текст: {loaded} / {totalPages}</div>}
-        {loaded === totalPages && !hasAnyText && <div className="pdf-text-loading">В этом PDF не найден текстовый слой. Похоже, это скан — используйте оригинальный PDF-режим.</div>}
+        {loaded === totalPages && !hasAnyContent && <div className="pdf-text-loading">В этом PDF не найден текстовый слой или доступные иллюстрации. Используйте оригинальный PDF-режим.</div>}
       </article>
     </div>
+  );
+}
+
+function PDFTextPageContent({ bookID, page }: { bookID: string; page: PDFTextPage }) {
+  const images = [...(page.images || [])].sort((left, right) => left.afterParagraph - right.afterParagraph);
+  const content: React.ReactNode[] = [];
+  for (let index = 0; index <= page.paragraphs.length; index += 1) {
+    images
+      .filter(image => Math.max(0, Math.min(page.paragraphs.length, image.afterParagraph)) === index)
+      .forEach(image => content.push(<PDFTextFigure bookID={bookID} page={page.page} image={image} key={`image-${image.id}`}/>));
+    if (index < page.paragraphs.length) {
+      const paragraph = page.paragraphs[index];
+      content.push(
+        <p className={paragraph.trimStart().startsWith("• ") ? "pdf-list-paragraph" : undefined} key={`paragraph-${index}`}>
+          {paragraph}
+        </p>
+      );
+    }
+  }
+  return <>{content}</>;
+}
+
+function PDFTextFigure({ bookID, page, image }: { bookID: string; page: number; image: PDFTextImagePayload }) {
+  const containerRef = useRef<HTMLElement>(null);
+  const [visible, setVisible] = useState(false);
+  const [source, setSource] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || visible) return;
+    if (!("IntersectionObserver" in window)) {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      setVisible(true);
+      observer.disconnect();
+    }, { rootMargin: "900px 0px" });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const controller = new AbortController();
+    let objectURL = "";
+    setFailed(false);
+    void api.pdfImage(bookID, page, image.id, controller.signal)
+      .then(blob => {
+        objectURL = URL.createObjectURL(blob);
+        setSource(objectURL);
+      })
+      .catch(error => {
+        if (!isAbortError(error)) {
+          console.error(`PDF image loading failed for page ${page}`, error);
+          setFailed(true);
+        }
+      });
+    return () => {
+      controller.abort();
+      if (objectURL) URL.revokeObjectURL(objectURL);
+    };
+  }, [bookID, image.id, page, visible]);
+
+  const aspectRatio = image.width > 0 && image.height > 0 ? image.width / image.height : 1;
+  const sourceWidth = image.pageWidth > 0 ? image.width / image.pageWidth * 115 : 100;
+  const width = `${Math.max(28, Math.min(100, sourceWidth))}%`;
+  return (
+    <figure className="pdf-text-figure" ref={containerRef} style={{ width }}>
+      <div className="pdf-text-figure-frame" style={{ aspectRatio }}>
+        {source && <img src={source} alt={`Иллюстрация со страницы ${page}`}/>}
+        {!source && !failed && <span>Загружаем иллюстрацию…</span>}
+        {failed && <span>Иллюстрация недоступна</span>}
+      </div>
+    </figure>
   );
 }
 

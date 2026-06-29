@@ -43,4 +43,16 @@ export interface BookUpdate {
 export interface PDFTextPagePayload {
   page: number;
   paragraphs: string[];
+  images?: PDFTextImagePayload[];
+}
+
+export interface PDFTextImagePayload {
+  id: string;
+  afterParagraph: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  pageWidth: number;
+  pageHeight: number;
 }
