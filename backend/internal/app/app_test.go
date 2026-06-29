@@ -25,6 +25,23 @@ func TestSplitExtractedPDFText(t *testing.T) {
 	}
 }
 
+func TestSplitExtractedPDFTextPreservesContentsLines(t *testing.T) {
+	text := "Оглавление\n\nПредисловие................................14\nКому стоит прочесть эту книгу..............16\n1.2. Надёжность............................27\n"
+	want := []string{
+		"Оглавление",
+		"Предисловие................................14\nКому стоит прочесть эту книгу..............16\n1.2. Надёжность............................27",
+	}
+	got := splitExtractedPDFText(text)
+	if len(got) != len(want) {
+		t.Fatalf("paragraphs = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("paragraph %d = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
 func TestPDFTextCacheRoundTrip(t *testing.T) {
 	handler, err := New(t.TempDir(), "")
 	if err != nil {

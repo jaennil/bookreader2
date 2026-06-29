@@ -479,7 +479,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .reader-article { width: min(var(--reader-width, 760px), calc(100% - 44px)); margin: 0 auto; padding: 68px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.85; }
 .reader-article h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 2.05); line-height: 1.2; }
 .reader-article .chapter-author { margin-bottom: 54px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
-.reader-article p { margin-bottom: 1.35em; text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
+.reader-article p { margin-bottom: 1.35em; text-align: justify; text-align-last: left; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
 .reader[data-theme="dark"] .reader-article { color: #d4d9d5; }
 .epub-stage { width: min(calc(var(--reader-width, 760px) + 100px), 100%); height: 100%; margin: auto; }
 .pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; }
@@ -504,7 +504,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-text-flow-head > p:last-child { max-width: 620px; color: #707871; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 11px; line-height: 1.7; }
 .pdf-text-flow .chapter-author { margin-bottom: 20px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
-.pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
+.pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-align-last: left; text-justify: inter-word; white-space: pre-line; hyphens: auto; -webkit-hyphens: auto; }
 .pdf-text-page-label, .pdf-text-loading { color: #8a8f8a; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
 .pdf-text-page-label { margin-bottom: 20px; }
 .pdf-empty-page, .pdf-text-loading { color: #7a807b; }

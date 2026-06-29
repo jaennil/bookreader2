@@ -34,7 +34,7 @@ const (
 	stateFileName       = "state.json"
 	bookDirectory       = "books"
 	pdfTextDirectory    = "pdf-text"
-	pdfTextCacheVersion = 2
+	pdfTextCacheVersion = 3
 )
 
 var (
@@ -618,6 +618,19 @@ func splitExtractedPDFText(text string) []string {
 	}
 	paragraphs := make([]string, 0, len(blocks))
 	for _, block := range blocks {
+		if shouldPreservePDFLineBreaks(block) {
+			lines := make([]string, 0, len(block))
+			for _, line := range block {
+				line = strings.Join(strings.Fields(line), " ")
+				if line != "" {
+					lines = append(lines, line)
+				}
+			}
+			if len(lines) > 0 {
+				paragraphs = append(paragraphs, strings.Join(lines, "\n"))
+			}
+			continue
+		}
 		paragraph := ""
 		for _, line := range block {
 			line = strings.TrimSpace(line)
@@ -628,6 +641,48 @@ func splitExtractedPDFText(text string) []string {
 		}
 	}
 	return paragraphs
+}
+
+func shouldPreservePDFLineBreaks(lines []string) bool {
+	if len(lines) < 2 {
+		return false
+	}
+	dotLeaders := 0
+	listItems := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, ".....") {
+			dotLeaders++
+		}
+		if isPDFListLine(line) {
+			listItems++
+		}
+	}
+	return dotLeaders > 0 || listItems >= 2
+}
+
+func isPDFListLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "•") || strings.HasPrefix(line, "– ") || strings.HasPrefix(line, "— ") || strings.HasPrefix(line, "- ") {
+		return true
+	}
+	first, _, _ := strings.Cut(line, " ")
+	first = strings.TrimRight(first, ".)")
+	parts := strings.Split(first, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func stripPDFPageNumber(lines []string) {
