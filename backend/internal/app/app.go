@@ -12,6 +12,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"log"
 	"math"
@@ -37,7 +39,7 @@ const (
 	bookDirectory       = "books"
 	pdfTextDirectory    = "pdf-text"
 	pdfImageDirectory   = "pdf-images"
-	pdfTextCacheVersion = 5
+	pdfTextCacheVersion = 6
 	pdfImageDPI         = 144
 )
 
@@ -806,7 +808,18 @@ func extractPDFImageLayout(ctx context.Context, filePath string, from, to int, p
 	for _, page := range pages {
 		paragraphs[page.Page] = page.Paragraphs
 	}
-	return parsePDFImageLayout(data, paragraphs)
+	images, err := parsePDFImageLayout(data, paragraphs)
+	if err != nil {
+		return nil, err
+	}
+	var document pdfHTMLDocument
+	if err := xml.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	if err := addPDFPageFallbacks(ctx, filePath, directory, document.Pages, paragraphs, images); err != nil {
+		return nil, err
+	}
+	return images, nil
 }
 
 func parsePDFImageLayout(data []byte, paragraphs map[int][]string) (map[int][]pdfTextImage, error) {
@@ -946,6 +959,77 @@ func commonPDFTextPrefix(left, right string) int {
 
 func samePDFImageBounds(left, right pdfTextImage) bool {
 	return math.Abs(left.Left-right.Left) < 1 && math.Abs(left.Top-right.Top) < 1 && math.Abs(left.Width-right.Width) < 1 && math.Abs(left.Height-right.Height) < 1
+}
+
+func addPDFPageFallbacks(ctx context.Context, filePath, directory string, pages []pdfHTMLPage, paragraphs map[int][]string, images map[int][]pdfTextImage) error {
+	for _, page := range pages {
+		if page.Width <= 0 || page.Height <= 0 || len(paragraphs[page.Number]) > 0 || len(images[page.Number]) > 0 {
+			continue
+		}
+		visible, err := pdfPageHasVisibleContent(ctx, filePath, directory, page.Number)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("detect visual content on pdf page %d: %v", page.Number, err)
+			continue
+		}
+		if !visible {
+			continue
+		}
+		images[page.Number] = []pdfTextImage{{
+			ID:         "page",
+			Width:      page.Width,
+			Height:     page.Height,
+			PageWidth:  page.Width,
+			PageHeight: page.Height,
+		}}
+	}
+	return nil
+}
+
+func pdfPageHasVisibleContent(ctx context.Context, filePath, directory string, page int) (bool, error) {
+	prefix := filepath.Join(directory, fmt.Sprintf("preview-%d", page))
+	command := exec.CommandContext(ctx, "pdftoppm", "-q", "-cropbox", "-f", strconv.Itoa(page), "-l", strconv.Itoa(page), "-singlefile", "-scale-to", "96", "-png", filePath, prefix)
+	if output, err := command.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("pdftoppm preview: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	file, err := os.Open(prefix + ".png")
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	preview, err := png.Decode(file)
+	if err != nil {
+		return false, err
+	}
+	return hasVisiblePDFContent(preview), nil
+}
+
+func hasVisiblePDFContent(preview image.Image) bool {
+	bounds := preview.Bounds()
+	pixels := bounds.Dx() * bounds.Dy()
+	if pixels <= 0 {
+		return false
+	}
+	required := max(6, pixels/1000)
+	visible := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			red, green, blue, alpha := preview.At(x, y).RGBA()
+			if alpha == 0 {
+				continue
+			}
+			luminance := (299*uint64(red) + 587*uint64(green) + 114*uint64(blue)) / 1000
+			if luminance < 245*257 {
+				visible++
+				if visible >= required {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func splitExtractedPDFText(text string) []string {

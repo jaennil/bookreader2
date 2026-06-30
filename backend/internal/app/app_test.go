@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -104,6 +106,22 @@ func TestParsePDFImageLayoutPlacesImageBetweenText(t *testing.T) {
 	}
 	if image.Width != 402 || image.Height != 242 {
 		t.Fatalf("unexpected padded bounds: %#v", image)
+	}
+}
+
+func TestHasVisiblePDFContentIgnoresBlankPage(t *testing.T) {
+	blank := image.NewGray(image.Rect(0, 0, 40, 40))
+	for index := range blank.Pix {
+		blank.Pix[index] = 255
+	}
+	if hasVisiblePDFContent(blank) {
+		t.Fatal("blank page was detected as visible content")
+	}
+	for x := 4; x < 12; x++ {
+		blank.SetGray(x, 8, color.Gray{Y: 0})
+	}
+	if !hasVisiblePDFContent(blank) {
+		t.Fatal("visible line was not detected")
 	}
 }
 
