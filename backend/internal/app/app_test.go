@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -122,6 +124,35 @@ func TestHasVisiblePDFContentIgnoresBlankPage(t *testing.T) {
 	}
 	if !hasVisiblePDFContent(blank) {
 		t.Fatal("visible line was not detected")
+	}
+}
+
+func TestFrontendCacheHeaders(t *testing.T) {
+	webDirectory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(webDirectory, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDirectory, "index.html"), []byte("<main>reader</main>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDirectory, "assets", "app-hash.js"), []byte("export {};"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(t.TempDir(), webDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "/reader", nil))
+	if pageResponse.Code != http.StatusOK || pageResponse.Header().Get("Cache-Control") != "no-store, no-cache, must-revalidate" {
+		t.Fatalf("unexpected page response: status=%d cache=%q", pageResponse.Code, pageResponse.Header().Get("Cache-Control"))
+	}
+
+	assetResponse := httptest.NewRecorder()
+	handler.ServeHTTP(assetResponse, httptest.NewRequest(http.MethodGet, "/assets/app-hash.js", nil))
+	if assetResponse.Code != http.StatusOK || assetResponse.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("unexpected asset response: status=%d cache=%q", assetResponse.Code, assetResponse.Header().Get("Cache-Control"))
 	}
 }
 

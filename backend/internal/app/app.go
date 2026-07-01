@@ -1428,10 +1428,22 @@ func (a *App) frontend(w http.ResponseWriter, r *http.Request) {
 	relativePath := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
 	requested := filepath.Join(a.webDir, relativePath)
 	if info, err := os.Stat(requested); err == nil && !info.IsDir() {
+		if strings.HasPrefix(relativePath, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			setFrontendNoCacheHeaders(w)
+		}
 		http.ServeFile(w, r, requested)
 		return
 	}
+	setFrontendNoCacheHeaders(w)
 	http.ServeFile(w, r, filepath.Join(a.webDir, "index.html"))
+}
+
+func setFrontendNoCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 }
 
 func (a *App) authenticate(r *http.Request) (string, string, bool) {
