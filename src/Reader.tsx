@@ -719,14 +719,50 @@ function PDFTextPageContent({ bookID, page }: { bookID: string; page: PDFTextPag
       .forEach(image => content.push(<PDFTextFigure bookID={bookID} page={page.page} image={image} key={`image-${image.id}`}/>));
     if (index < page.paragraphs.length) {
       const paragraph = page.paragraphs[index];
-      content.push(
-        <p className={paragraph.trimStart().startsWith("• ") ? "pdf-list-paragraph" : undefined} key={`paragraph-${index}`}>
-          {paragraph}
-        </p>
-      );
+      content.push(<PDFTextParagraph paragraph={paragraph} key={`paragraph-${index}`}/>);
     }
   }
   return <>{content}</>;
+}
+
+type PDFContentsLine = { label: string; page: string };
+
+function PDFTextParagraph({ paragraph }: { paragraph: string }) {
+  const contents = parsePDFContents(paragraph);
+  if (contents) {
+    return (
+      <div className="pdf-contents-paragraph">
+        {contents.map((line, index) => (
+          <div className="pdf-contents-line" key={`${line.label}-${index}`}>
+            <span className="pdf-contents-label">{line.label}</span>
+            {line.page && <><span className="pdf-contents-leader" aria-hidden="true"/><span className="pdf-contents-page">{line.page}</span></>}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return <p className={paragraph.trimStart().startsWith("• ") ? "pdf-list-paragraph" : undefined}>{paragraph}</p>;
+}
+
+function parsePDFContents(paragraph: string): PDFContentsLine[] | null {
+  const lines = paragraph.split("\n").map(line => line.trim()).filter(Boolean);
+  const matches = lines.map(line => line.match(/^(.*?)(?:\s*\.{3,}\s*)(\d+)\s*$/));
+  if (matches.filter(Boolean).length < 2) return null;
+
+  const contents: PDFContentsLine[] = [];
+  let pending: string[] = [];
+  lines.forEach((line, index) => {
+    const match = matches[index];
+    if (!match) {
+      pending.push(line);
+      return;
+    }
+    const label = [...pending, match[1].trim()].filter(Boolean).join(" ");
+    pending = [];
+    if (label) contents.push({ label, page: match[2] });
+  });
+  if (pending.length) contents.push({ label: pending.join(" "), page: "" });
+  return contents.length ? contents : null;
 }
 
 function PDFTextFigure({ bookID, page, image }: { bookID: string; page: number; image: PDFTextImagePayload }) {

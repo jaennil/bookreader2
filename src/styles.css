@@ -497,15 +497,20 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .pdf-link-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
 .pdf-link { position: absolute; display: block; border-radius: 2px; cursor: pointer; pointer-events: auto; }
 .pdf-link:hover { outline: 2px solid rgba(40, 88, 76, .35); background: rgba(223, 241, 91, .22); }
-.pdf-text-flow-stage { scroll-padding-top: 28px; }
-.pdf-text-flow { width: min(var(--reader-width, 760px), calc(100% - 44px)); margin: 0 auto; padding: 54px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.78; }
+.pdf-text-flow-stage { overflow-x: hidden; scroll-padding-top: 28px; }
+.pdf-text-flow { width: min(var(--reader-width, 760px), calc(100% - 44px)); min-width: 0; margin: 0 auto; padding: 54px 0 120px; font-family: Georgia, "Times New Roman", serif; font-size: var(--reader-size, 19px); line-height: 1.78; }
 .pdf-text-flow-head { margin-bottom: 34px; }
 .pdf-text-flow-head h1 { margin-bottom: 10px; font-size: calc(var(--reader-size, 19px) * 1.8); line-height: 1.18; }
 .pdf-text-flow-head > p:last-child { max-width: 620px; color: #707871; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 11px; line-height: 1.7; }
 .pdf-text-flow .chapter-author { margin-bottom: 20px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .pdf-text-flow-page { padding: 24px 0 12px; border-top: 1px solid rgba(92, 101, 95, .14); }
-.pdf-text-flow-page p { margin-bottom: 1.22em; text-align: justify; text-align-last: left; text-justify: inter-word; white-space: pre-line; hyphens: auto; -webkit-hyphens: auto; }
+.pdf-text-flow-page p { max-width: 100%; margin-bottom: 1.22em; overflow-wrap: anywhere; text-align: justify; text-align-last: left; text-justify: inter-word; white-space: pre-line; hyphens: auto; -webkit-hyphens: auto; }
 .pdf-text-flow-page .pdf-list-paragraph { margin-bottom: .85em; padding-left: 1.25em; text-indent: -1.25em; }
+.pdf-contents-paragraph { display: grid; gap: .42em; max-width: 100%; margin-bottom: 1.35em; line-height: 1.5; }
+.pdf-contents-line { display: flex; align-items: flex-end; min-width: 0; text-align: left; }
+.pdf-contents-label { min-width: 0; overflow-wrap: anywhere; hyphens: auto; -webkit-hyphens: auto; }
+.pdf-contents-leader { min-width: 1.4em; flex: 1 1 auto; margin: 0 .35em .45em; border-bottom: 1px dotted currentColor; opacity: .7; }
+.pdf-contents-page { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .pdf-text-figure { margin: 1.45em auto 1.8em; }
 .pdf-text-figure-frame { position: relative; display: grid; width: 100%; place-items: center; overflow: hidden; border: 1px solid rgba(72, 82, 76, .12); border-radius: 3px; background: #fff; color: #7a807b; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; line-height: 1.4; text-align: center; }
 .pdf-text-figure-frame::before { position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, rgba(54, 75, 66, .06) 50%, transparent 65%); content: ""; transform: translateX(-100%); animation: pdf-figure-loading 1.4s ease-in-out infinite; }
