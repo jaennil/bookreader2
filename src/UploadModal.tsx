@@ -1,14 +1,14 @@
 import { useRef, useState, type DragEvent } from "react";
-import { api } from "./api";
 import { CloseIcon, UploadIcon } from "./icons";
 import type { Book } from "./types";
 
 interface UploadModalProps {
   onClose: () => void;
+  onUpload: (file: File, title?: string, author?: string) => Promise<Book>;
   onUploaded: (book: Book) => void;
 }
 
-export function UploadModal({ onClose, onUploaded }: UploadModalProps) {
+export function UploadModal({ onClose, onUpload, onUploaded }: UploadModalProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -29,7 +29,7 @@ export function UploadModal({ onClose, onUploaded }: UploadModalProps) {
     try {
       const metadata = await readMetadata(file, extension);
       setProgress(46);
-      const book = await api.upload(file, metadata.title, metadata.author);
+      const book = await onUpload(file, metadata.title, metadata.author);
       setProgress(100);
       window.setTimeout(() => onUploaded(book), 250);
     } catch (caught) {
@@ -51,7 +51,7 @@ export function UploadModal({ onClose, onUploaded }: UploadModalProps) {
         <button className="close-button" aria-label="Закрыть" onClick={onClose}><CloseIcon/></button>
         <p className="eyebrow">Новая книга</p>
         <h2 id="upload-title">Добавить на полку</h2>
-        <p className="modal-intro">Файл загрузится в ваш аккаунт и станет доступен на других устройствах.</p>
+        <p className="modal-intro">Файл сохранится локально сразу, а при наличии сети синхронизируется с аккаунтом.</p>
         <button
           className={`drop-zone ${dragging ? "dragover" : ""}`}
           type="button"

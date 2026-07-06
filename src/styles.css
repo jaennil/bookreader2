@@ -237,6 +237,9 @@ button { color: inherit; }
 .account-copy strong { font-size: 12px; font-weight: 700; }
 .sync-status { display: flex; align-items: center; gap: 5px; color: #8d918d; font-size: 9px; }
 .sync-status::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #64a66e; }
+.sync-status.offline::before, .sync-status.pending::before { background: #d5a04f; }
+.sync-status.syncing::before { background: #5b8ec9; }
+.sync-status.error::before { background: #c75d4d; }
 .account-button > svg { width: 15px; color: #919590; }
 
 .main {
@@ -350,9 +353,12 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .favorite-button:hover { transform: scale(1.08); }
 .favorite-button svg { width: 14px; height: 14px; }
 .favorite-button.active svg { fill: #e46a3f; color: #e46a3f; }
-.delete-button { position: absolute; z-index: 6; top: 46px; right: 9px; display: grid; place-items: center; width: 29px; height: 29px; border: 0; border-radius: 50%; background: rgba(255,255,255,.8); color: #7e4940; opacity: 0; cursor: pointer; transition: opacity .2s, transform .2s; }
-.book-card:hover .delete-button { opacity: 1; }
-.delete-button:hover { transform: scale(1.08); }
+.offline-button { position: absolute; z-index: 6; top: 46px; right: 9px; display: grid; place-items: center; width: 29px; height: 29px; border: 0; border-radius: 50%; background: rgba(255,255,255,.8); color: var(--green); opacity: 0; cursor: pointer; font-size: 9px; font-weight: 800; transition: opacity .2s, transform .2s; }
+.offline-button.active { opacity: 1; background: rgba(223,241,91,.9); color: var(--green-dark); }
+.offline-button:disabled { cursor: wait; opacity: 1; }
+.delete-button { position: absolute; z-index: 6; top: 83px; right: 9px; display: grid; place-items: center; width: 29px; height: 29px; border: 0; border-radius: 50%; background: rgba(255,255,255,.8); color: #7e4940; opacity: 0; cursor: pointer; transition: opacity .2s, transform .2s; }
+.book-card:hover .delete-button, .book-card:hover .offline-button { opacity: 1; }
+.delete-button:hover, .offline-button:hover { transform: scale(1.08); }
 .delete-button svg { width: 13px; }
 .book-meta { padding-top: 14px; }
 .book-meta h3 { margin-bottom: 5px; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
@@ -599,7 +605,7 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
   .book-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px 17px; }
   .book-cover { border-radius: 3px 9px 9px 3px; }
   .cover-title { font-size: clamp(13px, 4.5vw, 18px); }
-  .favorite-button, .delete-button { opacity: 1; }
+  .favorite-button, .offline-button, .delete-button { opacity: 1; }
   .mobile-nav { position: fixed; z-index: 40; inset: auto 0 0; display: grid; grid-template-columns: repeat(4, 1fr); height: 67px; padding: 7px 10px max(7px, env(safe-area-inset-bottom)); border-top: 1px solid #dfdcd4; background: rgba(246,243,235,.94); backdrop-filter: blur(15px); }
   .mobile-nav button { display: grid; justify-items: center; gap: 2px; padding: 4px; border: 0; background: transparent; color: #8b8f8b; font-size: 8px; cursor: pointer; }
   .mobile-nav button.active { color: var(--green); }

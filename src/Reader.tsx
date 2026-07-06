@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { api } from "./api";
+import { offline } from "./offline";
 import { BackIcon, ChevronIcon } from "./icons";
 import type { Book, BookUpdate, PDFTextImagePayload, PDFTextPagePayload } from "./types";
 
@@ -84,7 +84,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
     const load = async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-          const value = await api.bookBlob(book.id, controller.signal);
+          const value = await offline.bookBlob(book, controller.signal);
           if (!disposed) {
             setBlob(value);
             setError("");
@@ -563,7 +563,7 @@ function PDFTextFlow({ book, fontSize, initialAnchor, onAnchorChange, onAnchorCa
       const extracted = new Map<number, PDFTextPage>();
       const loadRange = async (from: number, to: number, pagesCount: number) => {
         try {
-          const response = await api.pdfTextPages(book.id, from, to, pagesCount);
+          const response = await offline.pdfTextPages(book.id, from, to, pagesCount);
           if (cancelled) return;
           response.pages.forEach(page => extracted.set(page.page, page));
           setPages(Array.from(extracted.values()).sort((left, right) => left.page - right.page));
@@ -792,7 +792,7 @@ function PDFTextFigure({ bookID, page, image }: { bookID: string; page: number; 
     const controller = new AbortController();
     let objectURL = "";
     setFailed(false);
-    void api.pdfImage(bookID, page, image.id, controller.signal)
+    void offline.pdfImage(bookID, page, image.id, controller.signal)
       .then(blob => {
         objectURL = URL.createObjectURL(blob);
         setSource(objectURL);
