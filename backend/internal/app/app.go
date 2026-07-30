@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -19,6 +20,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +43,8 @@ const (
 	pdfImageDirectory   = "pdf-images"
 	pdfTextCacheVersion = 6
 	pdfImageDPI         = 144
+	maxEPUBEntries      = 10_000
+	maxEPUBExpandedSize = 512 << 20
 )
 
 var (
@@ -329,6 +333,12 @@ func (a *App) uploadBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Не удалось прочитать файл")
 		return
 	}
+	if format == "EPUB" {
+		if err := validateEPUB(temporaryName); err != nil {
+			writeError(w, http.StatusBadRequest, "Некорректный EPUB: "+err.Error())
+			return
+		}
+	}
 	if err := os.Rename(temporaryName, targetPath); err != nil {
 		writeError(w, http.StatusInternalServerError, "Не удалось сохранить файл")
 		return
@@ -361,6 +371,132 @@ func (a *App) uploadBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, book)
+}
+
+type epubContainer struct {
+	RootFiles []struct {
+		FullPath string `xml:"full-path,attr"`
+	} `xml:"rootfiles>rootfile"`
+}
+
+type epubPackage struct {
+	XMLName xml.Name `xml:"package"`
+	Items   []struct {
+		ID   string `xml:"id,attr"`
+		Href string `xml:"href,attr"`
+	} `xml:"manifest>item"`
+	Spine []struct {
+		IDRef string `xml:"idref,attr"`
+	} `xml:"spine>itemref"`
+}
+
+func validateEPUB(path string) error {
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		return errors.New("файл не является ZIP-архивом")
+	}
+	defer archive.Close()
+	if len(archive.File) == 0 || len(archive.File) > maxEPUBEntries {
+		return errors.New("недопустимое количество файлов")
+	}
+
+	files := make(map[string]*zip.File, len(archive.File))
+	var expanded uint64
+	for _, file := range archive.File {
+		name := filepath.ToSlash(filepath.Clean(file.Name))
+		if name == "." || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
+			return errors.New("архив содержит небезопасный путь")
+		}
+		if file.UncompressedSize64 > maxEPUBExpandedSize || expanded > maxEPUBExpandedSize-file.UncompressedSize64 {
+			return errors.New("распакованный файл слишком большой")
+		}
+		expanded += file.UncompressedSize64
+		files[name] = file
+	}
+
+	mimetype, ok := files["mimetype"]
+	if !ok {
+		return errors.New("отсутствует mimetype")
+	}
+	mimeValue, err := readZIPText(mimetype, 128)
+	if err != nil || strings.TrimSpace(mimeValue) != "application/epub+zip" {
+		return errors.New("неверный mimetype")
+	}
+
+	containerFile, ok := files["META-INF/container.xml"]
+	if !ok {
+		return errors.New("отсутствует META-INF/container.xml")
+	}
+	containerXML, err := readZIPText(containerFile, 1<<20)
+	if err != nil {
+		return errors.New("не удалось прочитать container.xml")
+	}
+	var container epubContainer
+	if err := xml.Unmarshal([]byte(containerXML), &container); err != nil || len(container.RootFiles) == 0 {
+		return errors.New("повреждён container.xml")
+	}
+	for _, rootFile := range container.RootFiles {
+		rootPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(rootFile.FullPath)))
+		if rootPath != "." && !strings.HasPrefix(rootPath, "../") && !strings.HasPrefix(rootPath, "/") {
+			if packageFile, exists := files[rootPath]; exists {
+				if err := validateEPUBPackage(packageFile, rootPath, files); err == nil {
+					return nil
+				}
+			}
+		}
+	}
+	return errors.New("не найдено корректное описание книги")
+}
+
+func validateEPUBPackage(file *zip.File, packagePath string, files map[string]*zip.File) error {
+	packageXML, err := readZIPText(file, 8<<20)
+	if err != nil {
+		return err
+	}
+	var document epubPackage
+	if err := xml.Unmarshal([]byte(packageXML), &document); err != nil || document.XMLName.Local != "package" {
+		return errors.New("invalid package document")
+	}
+	items := make(map[string]string, len(document.Items))
+	for _, item := range document.Items {
+		items[strings.TrimSpace(item.ID)] = strings.TrimSpace(item.Href)
+	}
+	if len(document.Spine) == 0 {
+		return errors.New("empty spine")
+	}
+	for _, reference := range document.Spine {
+		href := items[strings.TrimSpace(reference.IDRef)]
+		href, _, _ = strings.Cut(href, "#")
+		href, _, _ = strings.Cut(href, "?")
+		href, err = url.PathUnescape(href)
+		if err != nil {
+			return errors.New("invalid spine path")
+		}
+		contentPath := filepath.ToSlash(filepath.Clean(filepath.Join(filepath.Dir(packagePath), href)))
+		if href == "" || strings.HasPrefix(contentPath, "../") {
+			return errors.New("invalid spine reference")
+		}
+		if _, exists := files[contentPath]; !exists {
+			return errors.New("missing spine document")
+		}
+	}
+	return nil
+}
+
+func readZIPText(file *zip.File, limit int64) (string, error) {
+	reader, err := file.Open()
+	if err != nil {
+		return "", err
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > limit {
+		return "", errors.New("file is too large")
+	}
+	return string(data), nil
 }
 
 type bookUpdate struct {

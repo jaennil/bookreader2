@@ -487,7 +487,11 @@ h1 { margin-bottom: 0; font-family: Georgia, "Times New Roman", serif; font-size
 .reader-article .chapter-author { margin-bottom: 54px; color: #8a8e88; font-family: "Avenir Next", "Segoe UI", sans-serif; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .reader-article p { margin-bottom: 1.35em; text-align: justify; text-align-last: left; text-justify: inter-word; hyphens: auto; -webkit-hyphens: auto; }
 .reader[data-theme="dark"] .reader-article { color: #d4d9d5; }
-.epub-stage { width: min(calc(var(--reader-width, 760px) + 100px), 100%); height: 100%; margin: auto; }
+.epub-shell { position: relative; width: min(calc(var(--reader-width, 760px) + 100px), 100%); height: 100%; margin: auto; overflow: hidden; }
+.epub-stage { width: 100%; height: 100%; }
+.epub-message { position: absolute; z-index: 2; inset: 0; background: #f7f4ed; }
+.reader[data-theme="sepia"] .epub-message { background: #f4ead6; }
+.reader[data-theme="dark"] .epub-message { background: #17201d; }
 .pdf-stage { width: 100%; height: 100%; padding: 28px 0 70px; overflow-x: hidden; overflow-y: auto; }
 .pdf-document { display: grid; gap: 28px; width: min(900px, calc(100% - 40px)); margin: 0 auto; }
 .pdf-page { position: relative; display: grid; place-items: center; width: 100%; background: #fff; box-shadow: 0 12px 36px rgba(25, 35, 31, .16); }

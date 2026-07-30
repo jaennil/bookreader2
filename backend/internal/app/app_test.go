@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"image"
@@ -14,6 +15,49 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestValidateEPUB(t *testing.T) {
+	valid := filepath.Join(t.TempDir(), "valid.epub")
+	if err := os.WriteFile(valid, testEPUB(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEPUB(valid); err != nil {
+		t.Fatalf("valid EPUB rejected: %v", err)
+	}
+
+	invalid := filepath.Join(t.TempDir(), "invalid.epub")
+	if err := os.WriteFile(invalid, []byte("not an epub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateEPUB(invalid); err == nil {
+		t.Fatal("invalid EPUB accepted")
+	}
+}
+
+func TestEPUBUploadValidation(t *testing.T) {
+	handler, err := New(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := registerTestUser(t, handler, "epub-reader@example.com")
+
+	validResponse := uploadTestBook(t, handler, token, "valid.epub", testEPUB(t))
+	if validResponse.Code != http.StatusCreated {
+		t.Fatalf("valid EPUB status = %d, body = %s", validResponse.Code, validResponse.Body.String())
+	}
+	var book Book
+	if err := json.Unmarshal(validResponse.Body.Bytes(), &book); err != nil {
+		t.Fatal(err)
+	}
+	if book.Format != "EPUB" {
+		t.Fatalf("format = %q, want EPUB", book.Format)
+	}
+
+	invalidResponse := uploadTestBook(t, handler, token, "broken.epub", []byte("not an epub"))
+	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), "Некорректный EPUB") {
+		t.Fatalf("invalid EPUB status = %d, body = %s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+}
 
 func TestSplitExtractedPDFText(t *testing.T) {
 	text := "  12  \n\nЗаголовок\n\nПервая длин-\nная строка.\n\n1\nПункт списка\n\n— 13 —\n"
@@ -345,4 +389,58 @@ func authenticatedRequest(method, target, body, token string) *http.Request {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request
+}
+
+func uploadTestBook(t *testing.T, handler http.Handler, token, name string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/books", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func testEPUB(t *testing.T) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	archive := zip.NewWriter(&output)
+	mimetypeHeader := &zip.FileHeader{Name: "mimetype", Method: zip.Store}
+	mimetype, err := archive.CreateHeader(mimetypeHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(mimetype, "application/epub+zip"); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"META-INF/container.xml": `<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+		"EPUB/package.opf":       `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">test</dc:identifier><dc:title>Test EPUB</dc:title><dc:language>ru</dc:language></metadata><manifest><item id="chapter" href="chapter%20one.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="chapter"/></spine></package>`,
+		"EPUB/chapter one.xhtml": `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Глава</title></head><body><h1>Глава</h1><p>Текст книги</p></body></html>`,
+	}
+	for name, content := range files {
+		file, err := archive.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(file, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }

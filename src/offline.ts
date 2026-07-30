@@ -1,13 +1,14 @@
 import { api, APIError } from "./api";
+import ePub from "epubjs";
 import type { Book, BookFormat, BookUpdate, PDFTextPagePayload, User } from "./types";
 
 const DB_NAME = "polka-offline";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const CURRENT_USER_KEY = "polka-offline-user-id";
 const LOCAL_BOOK_PREFIX = "local-";
 const PDF_TEXT_BATCH_SIZE = 20;
 
-type StoreName = "users" | "books" | "files" | "pdfTextPages" | "pdfImages" | "queue";
+type StoreName = "users" | "books" | "files" | "pdfTextPages" | "pdfImages" | "epubLocations" | "queue";
 type SyncStatus = "synced" | "pending" | "offline" | "syncing" | "error";
 
 interface UserRecord {
@@ -50,6 +51,14 @@ interface PDFImageRecord {
   page: number;
   imageId: string;
   blob: Blob;
+  updatedAt: string;
+}
+
+interface EPUBLocationsRecord {
+  key: string;
+  userId: string;
+  bookId: string;
+  locations: string;
   updatedAt: string;
 }
 
@@ -99,10 +108,13 @@ export const offline = {
   books,
   uploadBook,
   updateBook,
+  stageBookUpdate,
   deleteBook,
   bookBlob,
   pdfTextPages,
   pdfImage,
+  cachedEPUBLocations,
+  cacheEPUBLocations,
   cacheBookForOffline,
   removeOfflineCopy,
   offlineBookIds,
@@ -123,6 +135,7 @@ function openDB() {
         createStore(db, "files", "key");
         createStore(db, "pdfTextPages", "key");
         createStore(db, "pdfImages", "key");
+        createStore(db, "epubLocations", "key");
         createStore(db, "queue", "id");
       };
     });
@@ -298,6 +311,12 @@ async function updateBook(userId: string, id: string, update: BookUpdate) {
   return optimistic;
 }
 
+async function stageBookUpdate(userId: string, id: string, update: BookUpdate) {
+  await queueUpdate(userId, id, update);
+  const cached = await cachedBook(userId, id);
+  if (cached) await cacheBook(userId, { ...cached, ...update, updatedAt: now() });
+}
+
 async function deleteBook(userId: string, book: Book) {
   await deleteRecord("books", bookKey(userId, book.id));
   await removeOfflineCopy(userId, book.id);
@@ -410,8 +429,14 @@ async function pdfImage(id: string, page: number, image: string, signal?: AbortS
 
 async function cacheBookForOffline(userId: string, book: Book, onProgress?: (progress: number) => void) {
   onProgress?.(4);
-  await bookBlob(book);
+  const blob = await bookBlob(book);
   onProgress?.(18);
+
+  if (book.format === "EPUB") {
+    await prepareEPUBForOffline(userId, book.id, blob);
+    onProgress?.(100);
+    return;
+  }
 
   if (book.format !== "PDF" || isLocalBook(book.id)) {
     onProgress?.(100);
@@ -438,6 +463,43 @@ async function cacheBookForOffline(userId: string, book: Book, onProgress?: (pro
   onProgress?.(100);
 }
 
+async function cachedEPUBLocations(bookId: string) {
+  const userId = currentUserId();
+  if (!userId) return null;
+  return (await getRecord<EPUBLocationsRecord>("epubLocations", bookKey(userId, bookId)))?.locations || null;
+}
+
+async function cacheEPUBLocations(bookId: string, locations: string) {
+  const userId = currentUserId();
+  if (!userId || !locations) return;
+  await storeEPUBLocations(userId, bookId, locations);
+}
+
+async function storeEPUBLocations(userId: string, bookId: string, locations: string) {
+  await putRecord<EPUBLocationsRecord>("epubLocations", {
+    key: bookKey(userId, bookId),
+    userId,
+    bookId,
+    locations,
+    updatedAt: now()
+  });
+}
+
+async function prepareEPUBForOffline(userId: string, bookId: string, blob: Blob) {
+  const epubBook = ePub(await blob.arrayBuffer());
+  try {
+    await epubBook.ready;
+    const cached = await getRecord<EPUBLocationsRecord>("epubLocations", bookKey(userId, bookId));
+    if (cached?.locations) epubBook.locations.load(cached.locations);
+    else {
+      await epubBook.locations.generate(1200);
+      await storeEPUBLocations(userId, bookId, epubBook.locations.save());
+    }
+  } finally {
+    epubBook.destroy();
+  }
+}
+
 async function prefetchPDFImages(bookId: string, pages: PDFTextPagePayload[]) {
   for (const page of pages) {
     for (const image of page.images || []) {
@@ -452,6 +514,7 @@ async function removeOfflineCopy(userId: string, bookId: string) {
   await deleteRecord("files", bookKey(userId, bookId));
   const [textPages, images] = await Promise.all([getAll<PDFTextRecord>("pdfTextPages"), getAll<PDFImageRecord>("pdfImages")]);
   await Promise.all([
+    deleteRecord("epubLocations", bookKey(userId, bookId)),
     ...textPages.filter(record => record.userId === userId && record.bookId === bookId).map(record => deleteRecord("pdfTextPages", record.key)),
     ...images.filter(record => record.userId === userId && record.bookId === bookId).map(record => deleteRecord("pdfImages", record.key))
   ]);
@@ -554,7 +617,7 @@ async function remapQueuedBookId(userId: string, oldId: string, newId: string, e
 }
 
 async function remapPDFCaches(userId: string, oldId: string, newId: string) {
-  const [textPages, images] = await Promise.all([getAll<PDFTextRecord>("pdfTextPages"), getAll<PDFImageRecord>("pdfImages")]);
+  const [textPages, images, epubLocations] = await Promise.all([getAll<PDFTextRecord>("pdfTextPages"), getAll<PDFImageRecord>("pdfImages"), getRecord<EPUBLocationsRecord>("epubLocations", bookKey(userId, oldId))]);
   await Promise.all([
     ...textPages.filter(record => record.userId === userId && record.bookId === oldId).flatMap(record => [
       putRecord<PDFTextRecord>("pdfTextPages", { ...record, key: pdfTextKey(userId, newId, record.page), bookId: newId }),
@@ -563,7 +626,11 @@ async function remapPDFCaches(userId: string, oldId: string, newId: string) {
     ...images.filter(record => record.userId === userId && record.bookId === oldId).flatMap(record => [
       putRecord<PDFImageRecord>("pdfImages", { ...record, key: pdfImageKey(userId, newId, record.page, record.imageId), bookId: newId }),
       deleteRecord("pdfImages", record.key)
-    ])
+    ]),
+    ...(epubLocations ? [
+      putRecord<EPUBLocationsRecord>("epubLocations", { ...epubLocations, key: bookKey(userId, newId), bookId: newId }),
+      deleteRecord("epubLocations", epubLocations.key)
+    ] : [])
   ]);
 }
 

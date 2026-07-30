@@ -1,4 +1,5 @@
 import { useRef, useState, type DragEvent } from "react";
+import ePub from "epubjs";
 import { CloseIcon, UploadIcon } from "./icons";
 import type { Book } from "./types";
 
@@ -86,15 +87,16 @@ async function readMetadata(file: File, extension: string): Promise<{ title: str
     return { title, author: `${first} ${last}`.trim() || undefined };
   }
   if (extension === "epub") {
+    let book: any;
     try {
-      const { default: ePub } = await import("epubjs");
-      const book = ePub(await file.arrayBuffer());
+      book = ePub(await file.arrayBuffer());
+      await book.ready;
       const metadata = await book.loaded.metadata;
-      const result = { title: metadata.title || fallback.title, author: metadata.creator || undefined };
-      book.destroy();
-      return result;
+      return { title: metadata.title || fallback.title, author: metadata.creator || undefined };
     } catch {
-      return fallback;
+      throw new Error("Некорректный или повреждённый EPUB-файл");
+    } finally {
+      book?.destroy();
     }
   }
   return fallback;

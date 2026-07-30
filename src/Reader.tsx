@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import ePub from "epubjs";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { offline } from "./offline";
 import { BackIcon, ChevronIcon } from "./icons";
@@ -192,7 +193,7 @@ export function Reader({ book, onClose, onUpdate }: ReaderProps) {
         {needsBookFile && !blob && !error && <ReaderMessage title="Открываем книгу…"/>}
         {needsBookFile && error && <ReaderMessage title="Файл недоступен" text={error}/>}
         {blob && liveBook.format === "PDF" && pdfMode === "page" && <PDFView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} mode={pdfMode} initialAnchor={pdfAnchor.current} onAnchorChange={rememberPDFAnchor} onAnchorCaptureReady={registerPDFAnchorCapture}/>}
-        {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
+        {blob && liveBook.format === "EPUB" && <EPUBView blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize} textWidth={textWidth}/>}
         {blob && liveBook.format === "FB2" && <FB2View blob={blob} book={liveBook} onUpdate={update} registerNavigation={registerNavigation} theme={theme} fontSize={fontSize}/>}
       </main>
       <footer className="reader-footer">
@@ -269,47 +270,80 @@ function FB2View({ blob, book, onUpdate, registerNavigation }: ViewProps) {
   return <div className="reader-scroll" ref={scrollRef} onScroll={handleScroll}><article className="reader-article"><h1>{book.title}</h1><div className="chapter-author">{book.author}</div>{paragraphs.length ? paragraphs.map((text, index) => <p key={index}>{text}</p>) : <p>В файле не найден текст.</p>}</article></div>;
 }
 
-function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize }: ViewProps) {
+function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize, textWidth }: ViewProps & { textWidth: number }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const renditionRef = useRef<any>(null);
   const epubRef = useRef<any>(null);
+  const themeRef = useRef(theme);
+  const fontSizeRef = useRef(fontSize);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [error, setError] = useState("");
+  themeRef.current = theme;
+  fontSizeRef.current = fontSize;
 
   useEffect(() => {
     let disposed = false;
-    blob.arrayBuffer().then(data => {
-      if (disposed || !containerRef.current) return;
-      return import("epubjs").then(({ default: ePub }) => {
+    setStatus("loading");
+    setError("");
+    void (async () => {
+      try {
+        const data = await blob.arrayBuffer();
         if (disposed || !containerRef.current) return;
         const epubBook = ePub(data);
         epubRef.current = epubBook;
+        await epubBook.ready;
+        if (disposed || !containerRef.current) return;
+        const cachedLocations = await offline.cachedEPUBLocations(book.id);
+        let locationsReady = false;
+        if (cachedLocations) {
+          try {
+            epubBook.locations.load(cachedLocations);
+            locationsReady = true;
+          } catch {
+            // A stale cache is regenerated below.
+          }
+        }
         const rendition = epubBook.renderTo(containerRef.current, { width: "100%", height: "100%", flow: "paginated" });
         renditionRef.current = rendition;
-        rendition.themes.default({ body: {
-          "font-family": "Georgia, serif",
-          "line-height": "1.7",
-          "text-align": "justify",
-          "hyphens": "auto",
-          "-webkit-hyphens": "auto",
-          padding: "0 4%"
-        } });
-        rendition.themes.fontSize(`${fontSize}px`);
-        applyEpubTheme(rendition, theme);
-        void rendition.display(book.location || undefined);
-        void epubBook.ready.then(() => epubBook.locations.generate(1200));
-        rendition.on("relocated", (location: any) => {
+        rendition.themes.default(epubReaderStyles());
+        rendition.themes.fontSize(`${fontSizeRef.current}px`);
+        applyEpubTheme(rendition, themeRef.current);
+        const rememberLocation = (location: any) => {
+          if (!location?.start?.cfi) return;
           const atEnd = Boolean(location.atEnd || location.end?.atEnd || location.end?.percentage >= .9999);
           const progress = atEnd ? 100 : epubBook.locations.length()
             ? epubBook.locations.percentageFromCfi(location.start.cfi) * 100
             : book.progress;
           onUpdate({ location: location.start.cfi, progress, ...(atEnd ? getFinishedBookUpdate(book) : {}) });
-        });
+        };
+        rendition.on("relocated", rememberLocation);
         registerNavigation({ previous: () => rendition.prev(), next: () => rendition.next() });
-      });
-    }).catch(error => console.error(error));
+        try {
+          await rendition.display(book.location || undefined);
+        } catch (caught) {
+          if (!book.location) throw caught;
+          await rendition.display();
+        }
+        if (disposed) return;
+        setStatus("ready");
+        if (!locationsReady) {
+          await epubBook.locations.generate(1200);
+          if (disposed) return;
+          await offline.cacheEPUBLocations(book.id, epubBook.locations.save());
+          rememberLocation(rendition.location);
+        }
+      } catch (caught) {
+        if (disposed) return;
+        setError(epubErrorMessage(caught));
+        setStatus("error");
+      }
+    })();
     return () => {
       disposed = true;
       renditionRef.current?.destroy();
       epubRef.current?.destroy();
+      renditionRef.current = null;
+      epubRef.current = null;
     };
   }, [blob]);
 
@@ -320,7 +354,41 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize }:
     applyEpubTheme(rendition, theme);
   }, [theme]);
 
-  return <div className="epub-stage" ref={containerRef}/>;
+  useLayoutEffect(() => {
+    const frame = window.requestAnimationFrame(() => renditionRef.current?.resize());
+    return () => window.cancelAnimationFrame(frame);
+  }, [textWidth]);
+
+  return <div className="epub-shell"><div className="epub-stage" ref={containerRef}/>{status === "loading" && <div className="epub-message"><ReaderMessage title="Открываем EPUB…"/></div>}{status === "error" && <div className="epub-message"><ReaderMessage title="EPUB не удалось открыть" text={error}/></div>}</div>;
+}
+
+function epubReaderStyles() {
+  return {
+    "*": { "box-sizing": "border-box" },
+    body: {
+      width: "auto",
+      "max-width": "100%",
+      "font-family": "Georgia, serif",
+      "line-height": "1.7",
+      "text-align": "justify",
+      "overflow-wrap": "anywhere",
+      "hyphens": "auto",
+      "-webkit-hyphens": "auto",
+      margin: "0",
+      padding: "0 4%"
+    },
+    "img, svg, video, canvas": { "max-width": "100%", "max-height": "100%", "object-fit": "contain" },
+    table: { width: "100%", "max-width": "100%", "font-size": ".85em", "table-layout": "fixed" },
+    "th, td": { "overflow-wrap": "anywhere", "word-break": "break-word" },
+    "pre, code": { "max-width": "100%", "white-space": "pre-wrap", "overflow-wrap": "anywhere" }
+  };
+}
+
+function epubErrorMessage(value: unknown) {
+  const message = value instanceof Error ? value.message : String(value || "");
+  if (/encrypted|encryption|drm/i.test(message)) return "Книга защищена DRM и не может быть открыта в браузере.";
+  if (/container|package|archive|zip|central directory|corrupt/i.test(message)) return "Файл повреждён или имеет некорректную структуру EPUB.";
+  return message || "Файл повреждён либо использует неподдерживаемые возможности EPUB.";
 }
 
 function applyEpubTheme(rendition: any, theme: Theme) {

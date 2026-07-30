@@ -28,6 +28,7 @@ export default function App() {
   const [offlineBookIDs, setOfflineBookIDs] = useState<Set<string>>(() => new Set());
   const [offlineDownloads, setOfflineDownloads] = useState<Record<string, number>>({});
   const saveTimers = useRef(new Map<string, number>());
+  const pendingUpdates = useRef(new Map<string, BookUpdate>());
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -67,6 +68,20 @@ export default function App() {
       setSyncSummary({ status: "error", pending: await offline.pendingCount(userID), synced: 0 });
     }
   }, [refreshOfflineState, user?.id]);
+
+  const flushPendingUpdates = useCallback(async (bookID?: string) => {
+    if (!user) return;
+    const entries = [...pendingUpdates.current.entries()].filter(([id]) => !bookID || id === bookID);
+    if (!entries.length) return;
+    for (const [id] of entries) {
+      const timer = saveTimers.current.get(id);
+      if (timer) window.clearTimeout(timer);
+      saveTimers.current.delete(id);
+      pendingUpdates.current.delete(id);
+    }
+    await Promise.all(entries.map(([id, update]) => offline.stageBookUpdate(user.id, id, update)));
+    await refreshOfflineState(user.id);
+  }, [refreshOfflineState, user]);
 
   useEffect(() => {
     if (!api.hasToken()) {
@@ -121,6 +136,22 @@ export default function App() {
       window.removeEventListener("offline", offlineHandler);
     };
   }, [refreshOfflineState, runSync, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") void flushPendingUpdates();
+      else void runSync(user.id);
+    };
+    const flushOnPageHide = () => void flushPendingUpdates();
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", flushOnPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", flushOnPageHide);
+      void flushPendingUpdates();
+    };
+  }, [flushPendingUpdates, runSync, user]);
 
   const visibleBooks = useMemo(() => books.filter(book => {
     const finished = isBookFinished(book);
@@ -224,16 +255,26 @@ export default function App() {
   const updateReadingProgress = useCallback((id: string, update: BookUpdate) => {
     if (!user) return;
     setBooks(current => current.map(book => book.id === id ? { ...book, ...update, updatedAt: new Date().toISOString() } : book));
+    pendingUpdates.current.set(id, { ...pendingUpdates.current.get(id), ...update });
     const previousTimer = saveTimers.current.get(id);
     if (previousTimer) window.clearTimeout(previousTimer);
     const timer = window.setTimeout(() => {
-      offline.updateBook(user.id, id, update).then(() => refreshOfflineState(user.id)).catch(error => {
+      const pending = pendingUpdates.current.get(id);
+      pendingUpdates.current.delete(id);
+      if (!pending) return;
+      offline.updateBook(user.id, id, pending).then(() => refreshOfflineState(user.id)).catch(error => {
         if (!(error instanceof APIError && error.status === 401)) notify("Не удалось синхронизировать прогресс");
       });
       saveTimers.current.delete(id);
     }, 350);
     saveTimers.current.set(id, timer);
   }, [notify, refreshOfflineState, user]);
+
+  async function closeReader() {
+    if (activeBookID) await flushPendingUpdates(activeBookID);
+    setActiveBookID(null);
+    if (user) void runSync(user.id);
+  }
 
   if (user === undefined) return <div className="app-loading"><span className="brand-mark"/><span>Открываем Полку…</span></div>;
   if (!user) return <AuthScreen onAuthenticated={authenticated}/>;
@@ -301,7 +342,7 @@ export default function App() {
       {showProfile && (
         <ProfileModal user={user} books={books} onClose={() => setShowProfile(false)} onLogout={() => void logout()}/>
       )}
-      {activeBook && <Reader book={activeBook} onClose={() => setActiveBookID(null)} onUpdate={update => updateReadingProgress(activeBook.id, update)}/>}
+      {activeBook && <Reader book={activeBook} onClose={() => void closeReader()} onUpdate={update => updateReadingProgress(activeBook.id, update)}/>}
       {toast && <div className="toast"><CheckIcon/><span>{toast}</span></div>}
     </>
   );

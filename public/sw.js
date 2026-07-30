@@ -1,13 +1,19 @@
-const SHELL_CACHE = "polka-shell-v1";
+const SHELL_CACHE = "polka-shell-v2";
 const STATIC_PATHS = ["/", "/site.webmanifest", "/icon.svg", "/favicon.svg"];
 
 self.addEventListener("install", event => {
-  event.waitUntil(
-    caches.open(SHELL_CACHE)
-      .then(cache => cache.addAll(STATIC_PATHS))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
+
+async function precacheShell() {
+  const cache = await caches.open(SHELL_CACHE);
+  const home = await fetch("/", { cache: "no-cache" });
+  if (!home.ok) throw new Error("App shell is unavailable");
+  const html = await home.clone().text();
+  await cache.put("/", home);
+  const assets = [...html.matchAll(/(?:src|href)=["'](\/assets\/[^"']+)["']/g)].map(match => match[1]);
+  await cache.addAll([...STATIC_PATHS.filter(path => path !== "/"), ...new Set(assets)]);
+}
 
 self.addEventListener("activate", event => {
   event.waitUntil(
