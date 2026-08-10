@@ -35,6 +35,10 @@ const READER_WIDTH_MAX = 1100;
 const READER_WIDTH_PRESETS = [620, 760, 920, 1080];
 const READER_END_TOLERANCE = 4;
 const READER_SCROLL_RETRY_MS = 320;
+const EPUB_SWIPE_DISTANCE = 48;
+const EPUB_SWIPE_DURATION = 700;
+const EPUB_WHEEL_DISTANCE = 42;
+const EPUB_NAVIGATION_COOLDOWN = 220;
 
 interface ReaderProps {
   book: Book;
@@ -283,6 +287,7 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize, t
 
   useEffect(() => {
     let disposed = false;
+    let removeInputHandlers: () => void = () => undefined;
     setStatus("loading");
     setError("");
     void (async () => {
@@ -317,7 +322,9 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize, t
           onUpdate({ location: location.start.cfi, progress, ...(atEnd ? getFinishedBookUpdate(book) : {}) });
         };
         rendition.on("relocated", rememberLocation);
-        registerNavigation({ previous: () => rendition.prev(), next: () => rendition.next() });
+        const inputNavigation = installEPUBInputNavigation(rendition);
+        removeInputHandlers = inputNavigation.cleanup;
+        registerNavigation(inputNavigation.navigation);
         try {
           await rendition.display(book.location || undefined);
         } catch (caught) {
@@ -340,6 +347,7 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize, t
     })();
     return () => {
       disposed = true;
+      removeInputHandlers();
       renditionRef.current?.destroy();
       epubRef.current?.destroy();
       renditionRef.current = null;
@@ -362,6 +370,113 @@ function EPUBView({ blob, book, onUpdate, registerNavigation, theme, fontSize, t
   return <div className="epub-shell"><div className="epub-stage" ref={containerRef}/>{status === "loading" && <div className="epub-message"><ReaderMessage title="Открываем EPUB…"/></div>}{status === "error" && <div className="epub-message"><ReaderMessage title="EPUB не удалось открыть" text={error}/></div>}</div>;
 }
 
+function installEPUBInputNavigation(rendition: any): { navigation: Navigation; cleanup: () => void } {
+  let touchStart: { x: number; y: number; time: number; interactive: boolean } | null = null;
+  let navigationLocked = false;
+  let releaseTimer: number | undefined;
+  let wheelResetTimer: number | undefined;
+  let wheelDistance = 0;
+  const contentCleanups = new Set<() => void>();
+
+  const turn = (direction: "previous" | "next") => {
+    if (navigationLocked) return;
+    navigationLocked = true;
+    let result: unknown;
+    try {
+      result = direction === "next" ? rendition.next() : rendition.prev();
+    } catch {
+      navigationLocked = false;
+      return;
+    }
+    void Promise.resolve(result).catch(() => undefined).finally(() => {
+      window.clearTimeout(releaseTimer);
+      releaseTimer = window.setTimeout(() => { navigationLocked = false; }, EPUB_NAVIGATION_COOLDOWN);
+    });
+  };
+
+  const onTouchStart = (event: TouchEvent) => {
+    if (event.touches.length !== 1) {
+      touchStart = null;
+      return;
+    }
+    const touch = event.touches[0];
+    const target = event.target as { closest?: (selector: string) => Element | null } | null;
+    touchStart = {
+      x: touch.clientX,
+      y: touch.clientY,
+      time: performance.now(),
+      interactive: Boolean(target?.closest?.("a, button, input, textarea, select"))
+    };
+  };
+
+  const onTouchEnd = (event: TouchEvent) => {
+    const start = touchStart;
+    touchStart = null;
+    if (!start || start.interactive || event.changedTouches.length !== 1) return;
+    const touch = event.changedTouches[0];
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (performance.now() - start.time > EPUB_SWIPE_DURATION || Math.abs(deltaX) < EPUB_SWIPE_DISTANCE || Math.abs(deltaX) <= Math.abs(deltaY) * 1.2) return;
+    event.preventDefault();
+    const rtl = rendition.settings?.direction === "rtl";
+    const forward = rtl ? deltaX > 0 : deltaX < 0;
+    turn(forward ? "next" : "previous");
+  };
+
+  const attachContentInput = (contents: any) => {
+    const document = contents?.document as Document | undefined;
+    if (!document) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) return;
+      const dominantDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (!dominantDelta) return;
+      event.preventDefault();
+      wheelDistance += dominantDelta;
+      window.clearTimeout(wheelResetTimer);
+      wheelResetTimer = window.setTimeout(() => { wheelDistance = 0; }, 160);
+      if (Math.abs(wheelDistance) < EPUB_WHEEL_DISTANCE) return;
+      const rtl = rendition.settings?.direction === "rtl";
+      const forward = rtl ? wheelDistance < 0 : wheelDistance > 0;
+      wheelDistance = 0;
+      turn(forward ? "next" : "previous");
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        turn(rendition.settings?.direction === "rtl" ? "previous" : "next");
+      } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        turn(rendition.settings?.direction === "rtl" ? "next" : "previous");
+      }
+    };
+    document.addEventListener("wheel", onWheel, { passive: false });
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchend", onTouchEnd, { passive: false });
+    const cleanup = () => {
+      document.removeEventListener("wheel", onWheel);
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("touchend", onTouchEnd);
+      contentCleanups.delete(cleanup);
+    };
+    contentCleanups.add(cleanup);
+  };
+
+  rendition.hooks.content.register(attachContentInput);
+
+  return {
+    navigation: { previous: () => turn("previous"), next: () => turn("next") },
+    cleanup: () => {
+      window.clearTimeout(releaseTimer);
+      window.clearTimeout(wheelResetTimer);
+      rendition.hooks.content.deregister(attachContentInput);
+      [...contentCleanups].forEach(cleanup => cleanup());
+    }
+  };
+}
+
 function epubReaderStyles() {
   return {
     "*": { "box-sizing": "border-box" },
@@ -372,6 +487,7 @@ function epubReaderStyles() {
       "line-height": "1.7",
       "text-align": "justify",
       "overflow-wrap": "anywhere",
+      "touch-action": "pan-y pinch-zoom",
       "hyphens": "auto",
       "-webkit-hyphens": "auto",
       margin: "0",
